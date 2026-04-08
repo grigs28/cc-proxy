@@ -400,6 +400,325 @@ def build_message_stop_event() -> str:
     return sse_event("message_stop", {"type": "message_stop"})
 
 
+# --- Reverse Request Conversion (OpenAI -> Anthropic) ---
+
+def reverse_convert_content_block(block: dict) -> dict:
+    """Convert a single OpenAI content block to Anthropic format.
+
+    - text: pass through as text block
+    - image_url: convert to Anthropic image block
+    """
+    block_type = block.get("type")
+
+    if block_type == "text":
+        return {"type": "text", "text": block["text"]}
+
+    if block_type == "image_url":
+        url = block.get("image_url", {}).get("url", "")
+        # Handle data URLs
+        if url.startswith("data:"):
+            # Extract media type and data
+            parts = url[5:].split(";")
+            media_type = parts[0] if parts else "image/png"
+            data = parts[1].split(",")[1] if len(parts) > 1 else ""
+        else:
+            media_type = "image/png"
+            data = url  # For URLs, we'd need to fetch - this is a simplification
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            },
+        }
+
+    return block
+
+
+def reverse_convert_message(msg: dict) -> dict:
+    """Convert an OpenAI message to Anthropic format.
+
+    Handles:
+    - tool messages -> tool_result blocks in a user message
+    - assistant messages with tool_calls -> tool_use blocks
+    - text content -> text blocks
+    """
+    role = msg.get("role")
+    content = msg.get("content", "")
+
+    if role == "tool":
+        # Tool result -> tool_result block
+        tool_content = content or ""
+        if isinstance(tool_content, str):
+            return {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": msg.get("tool_call_id", ""),
+                    "content": tool_content,
+                }],
+            }
+        else:
+            # content is a list of blocks
+            parts = []
+            for sub in tool_content:
+                if sub.get("type") == "text":
+                    parts.append(sub["text"])
+            return {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": msg.get("tool_call_id", ""),
+                    "content": "\n".join(parts),
+                }],
+            }
+
+    if role == "assistant":
+        text_parts = []
+        tool_uses = []
+
+        if isinstance(content, str) and content:
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif block.get("type") == "image_url":
+                    # Convert image_url to image block
+                    img = reverse_convert_content_block(block)
+                    if img:
+                        text_parts.append(img)
+
+        # Handle tool_calls
+        tool_calls = msg.get("tool_calls", [])
+        for tc in tool_calls:
+            func = tc.get("function", {})
+            arguments = func.get("arguments", "{}")
+            try:
+                input_data = json.loads(arguments) if isinstance(arguments, str) else arguments
+            except (json.JSONDecodeError, TypeError):
+                input_data = {}
+            tool_uses.append({
+                "type": "tool_use",
+                "id": tc.get("id", ""),
+                "name": func.get("name", ""),
+                "input": input_data,
+            })
+
+        blocks = []
+        if text_parts:
+            blocks.append({"type": "text", "text": "\n".join(text_parts)})
+        blocks.extend(tool_uses)
+
+        if not blocks:
+            blocks.append({"type": "text", "text": ""})
+
+        return {
+            "role": "assistant",
+            "content": blocks,
+        }
+
+    # system, user, and other roles
+    if isinstance(content, str):
+        return {"role": role, "content": content}
+
+    # Content is a list of blocks
+    converted_blocks = [reverse_convert_content_block(b) for b in content]
+    return {"role": role, "content": converted_blocks}
+
+
+def reverse_convert_tools(tools: list) -> list:
+    """Convert OpenAI tool definitions to Anthropic format.
+
+    OpenAI: {type: "function", function: {name, description, parameters}}
+    Anthropic: {name, description, input_schema}
+    """
+    result = []
+    for tool in tools:
+        func = tool.get("function", {})
+        result.append({
+            "name": func.get("name", ""),
+            "description": func.get("description", ""),
+            "input_schema": func.get("parameters", {}),
+        })
+    return result
+
+
+def reverse_convert_request(openai_req: dict, model_map: dict | None = None) -> dict:
+    """Convert an OpenAI Chat Completions request to Anthropic Messages format.
+
+    - model: map using model_map parameter
+    - messages: convert via reverse_convert_message()
+    - max_tokens: pass through
+    - temperature, top_p: pass through
+    - stop -> stop_sequences
+    - tools: convert via reverse_convert_tools()
+
+    Args:
+        openai_req: OpenAI API request dictionary
+        model_map: Optional mapping of model names to upstream-supported names
+
+    Returns:
+        Anthropic-compatible request dictionary
+    """
+    if model_map is None:
+        model_map = {}
+
+    anthropic_req: dict[str, Any] = {}
+
+    # Model: map to upstream-supported names
+    raw_model = openai_req["model"]
+    anthropic_req["model"] = model_map.get(raw_model, raw_model)
+
+    # Build messages list
+    converted_messages = []
+
+    # Separate system messages from others
+    system_content = None
+    other_messages = []
+
+    for msg in openai_req.get("messages", []):
+        if msg.get("role") == "system":
+            system_content = msg.get("content", "")
+        else:
+            other_messages.append(msg)
+
+    # System prompt
+    if system_content is not None:
+        anthropic_req["system"] = system_content
+
+    # Convert messages
+    for msg in other_messages:
+        converted = reverse_convert_message(msg)
+        if isinstance(converted.get("content"), list):
+            # Flatten tool_results into separate messages
+            has_tool_result = any(
+                b.get("type") == "tool_result" for b in converted["content"]
+            )
+            if has_tool_result and converted["role"] == "user":
+                for block in converted["content"]:
+                    if block.get("type") == "tool_result":
+                        converted_messages.append({
+                            "role": "user",
+                            "content": [block],
+                        })
+                    else:
+                        converted_messages.append({
+                            "role": "user",
+                            "content": [block],
+                        })
+            else:
+                converted_messages.append(converted)
+        else:
+            converted_messages.append(converted)
+
+    anthropic_req["messages"] = converted_messages
+
+    # max_tokens: pass through
+    if "max_tokens" in openai_req:
+        anthropic_req["max_tokens"] = openai_req["max_tokens"]
+
+    # temperature: pass through
+    if "temperature" in openai_req:
+        anthropic_req["temperature"] = openai_req["temperature"]
+
+    # top_p: pass through
+    if "top_p" in openai_req:
+        anthropic_req["top_p"] = openai_req["top_p"]
+
+    # stop -> stop_sequences
+    if "stop" in openai_req:
+        stop = openai_req["stop"]
+        if isinstance(stop, str):
+            anthropic_req["stop_sequences"] = [stop]
+        elif isinstance(stop, list):
+            anthropic_req["stop_sequences"] = stop
+
+    # stream: pass through
+    if "stream" in openai_req:
+        anthropic_req["stream"] = openai_req["stream"]
+
+    # tools: convert if present
+    if "tools" in openai_req:
+        anthropic_req["tools"] = reverse_convert_tools(openai_req["tools"])
+
+    return anthropic_req
+
+
+# --- Reverse Response Conversion (Anthropic -> OpenAI) ---
+
+def reverse_convert_response(anthropic_resp: dict) -> dict:
+    """Convert Anthropic Messages response to OpenAI Chat Completions format.
+
+    Args:
+        anthropic_resp: Anthropic API response dictionary
+
+    Returns:
+        OpenAI-compatible response dictionary
+    """
+    message = anthropic_resp.get("message", {})
+    content = message.get("content", [])
+
+    # Extract text
+    text_parts = []
+    tool_calls = []
+    reasoning = None
+
+    for block in content:
+        btype = block.get("type")
+        if btype == "text":
+            text_parts.append(block.get("text", ""))
+        elif btype == "thinking":
+            reasoning = block.get("thinking", "")
+        elif btype == "tool_use":
+            func = block.get("input", {})
+            tool_calls.append({
+                "id": block.get("id", ""),
+                "type": "function",
+                "function": {
+                    "name": block.get("name", ""),
+                    "arguments": json.dumps(func) if isinstance(func, dict) else func,
+                },
+            })
+
+    text_content = "\n".join(text_parts) if text_parts else None
+    finish_reason_map = {v: k for k, v in FINISH_REASON_MAP.items()}
+    stop_reason = message.get("stop_reason", "stop")
+    finish_reason = finish_reason_map.get(stop_reason, "stop")
+
+    result: dict[str, Any] = {
+        "id": anthropic_resp.get("id", generate_msg_id()),
+        "object": "chat.completion",
+        "created": 0,
+        "model": anthropic_resp.get("model", ""),
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": text_content,
+            },
+            "finish_reason": finish_reason,
+        }],
+        "usage": {
+            "prompt_tokens": anthropic_resp.get("usage", {}).get("input_tokens", 0),
+            "completion_tokens": anthropic_resp.get("usage", {}).get("output_tokens", 0),
+            "total_tokens": sum([
+                anthropic_resp.get("usage", {}).get("input_tokens", 0),
+                anthropic_resp.get("usage", {}).get("output_tokens", 0),
+            ]),
+        },
+    }
+
+    if reasoning:
+        result["choices"][0]["message"]["reasoning_content"] = reasoning
+
+    if tool_calls:
+        result["choices"][0]["message"]["tool_calls"] = tool_calls
+
+    return result
+
+
 # --- Error Conversion ---
 
 def convert_error(status_code: int, openai_error: dict) -> tuple[int, dict]:

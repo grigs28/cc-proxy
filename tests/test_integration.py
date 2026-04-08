@@ -9,12 +9,12 @@ from cc_proxy.config import init_config
 @pytest.fixture(autouse=True)
 def setup_config():
     """每个测试前初始化配置"""
-    init_config("config.example.yaml")
+    init_config(".env.example")
 
 
 def _get_app():
     from cc_proxy.proxy import create_app
-    return create_app("config.example.yaml")
+    return create_app(".env.example")
 
 
 def test_health_endpoint():
@@ -22,9 +22,8 @@ def test_health_endpoint():
     client = TestClient(app)
     resp = client.get("/")
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "ok"
-    assert data["service"] == "cc-proxy"
+    # 启用认证后，/ 返回登录页面（HTML）
+    assert "html" in resp.headers.get("content-type", "")
 
 
 def test_list_models():

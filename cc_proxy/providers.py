@@ -13,6 +13,16 @@ class Model:
     """模型定义"""
     id: str
     display_name: str
+    supported_formats: list[str] = field(default_factory=lambda: ["openai", "anthropic"])
+
+    @staticmethod
+    def _from_dict(data: dict[str, Any]) -> "Model":
+        """从字典创建 Model 实例"""
+        return Model(
+            id=data["id"],
+            display_name=data.get("display_name", data["id"]),
+            supported_formats=data.get("supported_formats", ["openai", "anthropic"]),
+        )
 
 
 @dataclass
@@ -23,22 +33,50 @@ class Provider:
     api_key: str
     timeout: int = 300
     models: list[Model] = field(default_factory=list)
-    provider_type: str = "openai"  # "openai" = 格式转换, "anthropic" = 直通
+    provider_type: str = "openai"  # 兼容旧配置
+    # 支持的格式列表：["openai"]、["anthropic"] 或 ["openai", "anthropic"]
+    supported_formats: list[str] = field(default_factory=lambda: ["openai", "anthropic"])
+
+    @staticmethod
+    def _normalize_base_url(url: str) -> str:
+        """规范化 base_url，去除末尾的 /v1 路径
+
+        Args:
+            url: 原始 base_url
+
+        Returns:
+            规范化后的 base_url
+        """
+        url = url.rstrip("/")
+        # 如果末尾是 /v1，去除它（避免与代码中的路径拼接重复）
+        if url.endswith("/v1"):
+            url = url[:-3]
+        return url
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Provider":
         """从字典创建 Provider 实例"""
         models = [
-            Model(id=m["id"], display_name=m.get("display_name", m["id"]))
-            for m in data.get("models", [])
+            Model._from_dict(m) for m in data.get("models", [])
         ]
+        # 规范化 base_url
+        base_url = cls._normalize_base_url(data["base_url"])
+
+        # supported_formats: 新字段，优先读取
+        fmts = data.get("supported_formats")
+        if not fmts:
+            # 降级：根据旧 type 字段推断
+            ptype = data.get("type", "openai")
+            fmts = ["anthropic"] if ptype == "anthropic" else ["openai"]
+
         return cls(
             name=data["name"],
-            base_url=data["base_url"],
+            base_url=base_url,
             api_key=data["api_key"],
             timeout=data.get("timeout", 300),
             models=models,
             provider_type=data.get("type", "openai"),
+            supported_formats=fmts,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,8 +87,9 @@ class Provider:
             "api_key": self.api_key,
             "timeout": self.timeout,
             "type": self.provider_type,
+            "supported_formats": self.supported_formats,
             "models": [
-                {"id": m.id, "display_name": m.display_name}
+                {"id": m.id, "display_name": m.display_name, "supported_formats": m.supported_formats}
                 for m in self.models
             ],
         }
@@ -58,6 +97,18 @@ class Provider:
     def has_model(self, model_id: str) -> bool:
         """检查提供商是否拥有指定模型"""
         return any(m.id == model_id for m in self.models)
+
+    def supports_format(self, fmt: str) -> bool:
+        """检查是否支持指定格式"""
+        return fmt in self.supported_formats
+
+    def is_anthropic_native(self) -> bool:
+        """检查是否原生支持 Anthropic 格式"""
+        return "anthropic" in self.supported_formats
+
+    def is_openai_native(self) -> bool:
+        """检查是否原生支持 OpenAI 格式"""
+        return "openai" in self.supported_formats
 
 
 class ProviderRegistry:

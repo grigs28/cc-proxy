@@ -673,6 +673,14 @@
                         <label>超时时间 (秒)</label>
                         <input type="number" id="provider-timeout" value="300" min="1">
                     </div>
+                    <div class="form-group">
+                        <label>支持格式</label>
+                        <div style="display:flex;gap:1rem">
+                            <label><input type="checkbox" id="fmt-openai" value="openai" checked> OpenAI</label>
+                            <label><input type="checkbox" id="fmt-anthropic" value="anthropic" checked> Anthropic</label>
+                        </div>
+                        <small>勾选表示该 provider 原生支持该格式（直通）；不勾选则自动转换</small>
+                    </div>
                 </form>
             </div>
             <div class="modal-footer">
@@ -693,9 +701,13 @@
                 <input type="hidden" id="models-provider-name">
                 <div class="form-group">
                     <label>添加新模型</label>
-                    <div style="display: flex; gap: 0.5rem">
-                        <input type="text" id="new-model-id" placeholder="模型 ID (如: gpt-4o)">
-                        <input type="text" id="new-model-display" placeholder="显示名称 (如: GPT-4o)">
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap">
+                        <input type="text" id="new-model-id" placeholder="模型 ID (如: gpt-4o)" style="flex:1;min-width:120px">
+                        <input type="text" id="new-model-display" placeholder="显示名称" style="flex:1;min-width:120px">
+                        <div style="display:flex;gap:0.5rem;align-items:center">
+                            <label title="OpenAI"><input type="checkbox" id="new-model-openai" value="openai" checked> OpenAI</label>
+                            <label title="Anthropic"><input type="checkbox" id="new-model-anthropic" value="anthropic" checked> Anthropic</label>
+                        </div>
                         <button class="btn btn-primary" onclick="addModel()">添加</button>
                     </div>
                 </div>
@@ -761,6 +773,13 @@
                 authToken = data.token;
                 sessionStorage.setItem('ccProxyToken', authToken);
                 showApp();
+                // 首次启动强制改密码
+                if (data.requires_password_change) {
+                    setTimeout(function() {
+                        showChangePassword();
+                        showToast('安全提示：请先修改默认密码', 'warning');
+                    }, 500);
+                }
             })
             .catch(function(err) {
                 showToast(err.message, 'error');
@@ -910,6 +929,10 @@
             document.getElementById('provider-url').value = isEdit ? provider.base_url : '';
             document.getElementById('provider-key').value = isEdit ? provider.api_key : '';
             document.getElementById('provider-timeout').value = isEdit ? provider.timeout : 300;
+            // supported_formats 复选框
+            var fmts = isEdit ? (provider.supported_formats || []) : ['openai', 'anthropic'];
+            document.getElementById('fmt-openai').checked = fmts.includes('openai');
+            document.getElementById('fmt-anthropic').checked = fmts.includes('anthropic');
             document.getElementById('provider-name').disabled = isEdit;
             document.getElementById('provider-modal').classList.add('active');
         }
@@ -937,10 +960,16 @@
             var url = isEdit ? '/providers/' + encodeURIComponent(editingName) : '/providers';
             var method = isEdit ? 'PUT' : 'POST';
 
+            // 收集 supported_formats
+            var fmts = [];
+            if (document.getElementById('fmt-openai').checked) fmts.push('openai');
+            if (document.getElementById('fmt-anthropic').checked) fmts.push('anthropic');
+            if (fmts.length === 0) { showToast('请至少选择一种格式', 'error'); return; }
+
             api(url, {
                 method: method,
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name, base_url: base_url, api_key: api_key, timeout: timeout })
+                body: JSON.stringify({ name: name, base_url: base_url, api_key: api_key, timeout: timeout, supported_formats: fmts })
             })
             .then(function(r) {
                 if (r.ok) return r.json();
@@ -1127,10 +1156,16 @@
                 return;
             }
 
+            // 收集 supported_formats
+            var fmts = [];
+            if (document.getElementById('new-model-openai').checked) fmts.push('openai');
+            if (document.getElementById('new-model-anthropic').checked) fmts.push('anthropic');
+            if (fmts.length === 0) { showToast('请至少选择一种格式', 'error'); return; }
+
             api('/providers/' + encodeURIComponent(providerName) + '/models', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: modelId, display_name: displayName })
+                body: JSON.stringify({ id: modelId, display_name: displayName, supported_formats: fmts })
             })
             .then(function(r) {
                 if (r.ok) return r.json();
@@ -1191,7 +1226,8 @@
             var confirm = document.getElementById('confirm-password').value;
             if (!current || !newPw) { showToast('请填写所有字段', 'error'); return; }
             if (newPw !== confirm) { showToast('两次输入的新密码不一致', 'error'); return; }
-            if (newPw.length < 3) { showToast('新密码至少 3 个字符', 'error'); return; }
+            if (newPw.length < 8) { showToast('新密码至少 8 个字符', 'error'); return; }
+            if (!/[a-zA-Z]/.test(newPw) || !/[0-9]/.test(newPw)) { showToast('密码必须同时包含字母和数字', 'error'); return; }
             api('/auth/password', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

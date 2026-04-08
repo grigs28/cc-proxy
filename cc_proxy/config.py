@@ -1,8 +1,8 @@
-"""配置管理模块 - 支持多提供商配置和热重载"""
+"""配置管理模块 - .env (YAML) 配置文件 + 环境变量支持"""
 import logging
 import os
+import re
 import threading
-from pathlib import Path
 from typing import Any
 
 import yaml
@@ -12,15 +12,42 @@ logger = logging.getLogger("cc-proxy")
 # 全局配置缓存
 _config: dict[str, Any] = {}
 _config_lock = threading.Lock()
-_config_path: str = "config.yaml"
+_config_path: str = ".env"
+
+# 环境变量替换正则：${VAR} 或 ${VAR:-default}
+_ENV_VAR_PATTERN = re.compile(r'\$\{([^:}]+)(?::-([^}]*))?\}')
 
 
-def load_config(path: str = "config.yaml") -> dict:
-    """从文件加载配置，自动处理旧格式兼容"""
+def is_default_password() -> bool:
+    """检查是否使用默认密码"""
+    pw = _config.get("admin_password", "admin")
+    return pw == "admin"
+
+
+def _substitute_env_vars(value: Any) -> Any:
+    """递归替换配置中的 ${ENV_VAR} 或 ${ENV_VAR:-default} 引用"""
+    if isinstance(value, str):
+        def replace_env_var(match):
+            env_var = match.group(1)
+            default = match.group(2) if match.group(2) is not None else ""
+            return os.environ.get(env_var, default)
+        return _ENV_VAR_PATTERN.sub(replace_env_var, value)
+    elif isinstance(value, dict):
+        return {_substitute_env_vars(k): _substitute_env_vars(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_substitute_env_vars(item) for item in value]
+    return value
+
+
+def load_config(path: str = ".env") -> dict:
+    """从 YAML 文件加载配置，替换环境变量引用"""
     with open(path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
-    # 兼容旧的单 upstream 格式，自动转换为 providers 格式
+    # 替换环境变量引用
+    cfg = _substitute_env_vars(cfg)
+
+    # 兼容旧的单 upstream 格式
     if "upstream" in cfg and "providers" not in cfg:
         upstream = cfg["upstream"]
         cfg["providers"] = [{
@@ -33,25 +60,19 @@ def load_config(path: str = "config.yaml") -> dict:
                 {"id": "gpt-4o-mini", "display_name": "GPT-4o Mini"},
             ],
         }]
-        # 移除旧配置（保留在内存中用于转换）
         cfg["_upstream_legacy"] = upstream
 
     # 确保 server 配置完整
     if "server" not in cfg:
-        cfg["server"] = {
-            "host": "0.0.0.0",
-            "port": 5566,
-        }
+        cfg["server"] = {"host": "0.0.0.0", "port": 5566}
 
-    # 兼容旧的 proxy_port/admin_port 配置，统一使用 port
+    # 兼容旧端口配置
     if "proxy_port" in cfg["server"] and "port" not in cfg["server"]:
         cfg["server"]["port"] = cfg["server"]["proxy_port"]
 
-    # 确保 model_map 存在
+    # 确保 model_map 和 providers 存在
     if "model_map" not in cfg:
         cfg["model_map"] = {}
-
-    # 确保 providers 存在
     if "providers" not in cfg:
         cfg["providers"] = []
 
@@ -69,7 +90,6 @@ def get_config() -> dict[str, Any]:
 def reload_config() -> dict[str, Any]:
     """重新加载配置文件（线程安全）"""
     global _config, _config_path
-
     with _config_lock:
         if os.path.exists(_config_path):
             _config = load_config(_config_path)
@@ -80,19 +100,10 @@ def reload_config() -> dict[str, Any]:
 
 
 def save_config(config: dict[str, Any], path: str | None = None) -> None:
-    """保存配置到文件（线程安全）
-
-    Args:
-        config: 要保存的配置字典
-        path: 保存路径，默认使用当前加载的路径
-    """
+    """保存配置到文件（线程安全）"""
     global _config, _config_path
-
     save_path = path or _config_path
-
-    # 移除内部使用的字段
     config_to_save = {k: v for k, v in config.items() if not k.startswith("_")}
-
     with _config_lock:
         with open(save_path, "w", encoding="utf-8") as f:
             yaml.dump(config_to_save, f, allow_unicode=True, sort_keys=False)
@@ -100,31 +111,44 @@ def save_config(config: dict[str, Any], path: str | None = None) -> None:
         logger.info(f"配置已保存: {save_path}")
 
 
-def init_config(path: str = "config.yaml") -> dict[str, Any]:
-    """初始化配置（应用启动时调用）"""
+def init_config(path: str = ".env") -> dict[str, Any]:
+    """初始化配置（应用启动时调用）
+
+    默认读取 .env 文件（YAML 格式），也兼容旧的 config.yaml
+    """
     global _config, _config_path
 
+    # 自动选择配置文件：优先 .env，其次 config.yaml
+    if path == ".env" and not os.path.exists(".env") and os.path.exists("config.yaml"):
+        logger.info("未找到 .env，使用旧格式 config.yaml")
+        path = "config.yaml"
+
     _config_path = path
+
     if not os.path.exists(path):
         logger.warning(f"配置文件不存在: {path}，使用默认配置")
+        logger.warning("请复制 .env.example 为 .env 并填入配置：cp .env.example .env")
         _config = {
             "server": {"host": "0.0.0.0", "port": 5566},
             "providers": [],
             "model_map": {},
+            "admin_password": "admin",
         }
         return _config.copy()
 
     _config = load_config(path)
+
+    if is_default_password():
+        logger.warning("⚠️  正在使用默认密码 'admin'，请尽快修改！")
+        logger.warning("   通过管理面板 http://localhost:5566/ 登录后修改密码")
+
     return _config.copy()
 
 
 def get_server_config() -> dict[str, Any]:
     """获取服务器配置"""
     cfg = get_config()
-    return cfg.get("server", {
-        "host": "0.0.0.0",
-        "port": 5566,
-    })
+    return cfg.get("server", {"host": "0.0.0.0", "port": 5566})
 
 
 def get_providers() -> list[dict[str, Any]]:
@@ -140,27 +164,14 @@ def get_model_map() -> dict[str, str]:
 
 
 def get_provider_for_model_legacy(model_id: str) -> dict[str, Any] | None:
-    """根据模型ID查找对应的提供商（兼容旧的单 upstream 模式）
-
-    Args:
-        model_id: 模型ID
-
-    Returns:
-        提供商配置字典，如果未找到则返回 None
-    """
-    # 首先检查 model_map
+    """兼容旧的单 upstream 模式"""
     model_map = get_model_map()
     mapped_model = model_map.get(model_id, model_id)
-
-    # 在所有提供商中查找模型
     for provider in get_providers():
         for model in provider.get("models", []):
             if model["id"] == mapped_model:
                 return provider
-
-    # 如果找不到，返回第一个提供商（兼容旧行为）
     providers = get_providers()
     if providers:
         return providers[0]
-
     return None

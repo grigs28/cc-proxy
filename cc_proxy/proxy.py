@@ -1,5 +1,6 @@
 """主代理 FastAPI 应用 - 多提供商路由 + Anthropic 直通 + 管理界面"""
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -8,13 +9,13 @@ import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from cc_proxy.config import get_config, get_model_map, get_server_config, init_config, reload_config
+from cc_proxy.config import get_config, get_model_map, get_server_config, init_config, is_default_password, reload_config, save_config
 from cc_proxy.converter import (
     FINISH_REASON_MAP,
     build_content_block_delta_event,
@@ -27,6 +28,8 @@ from cc_proxy.converter import (
     convert_request,
     convert_response,
     generate_msg_id,
+    reverse_convert_request,
+    reverse_convert_response,
     sse_event,
 )
 from cc_proxy.providers import Model, Provider, get_registry
@@ -35,16 +38,58 @@ logger = logging.getLogger("cc-proxy")
 
 VERSION = "0.3.0"
 ANTHROPIC_VERSION = "2023-06-01"
+OPENAI_API_VERSION = "2024-06-01"
 RETRY_STATUSES = {404, 429, 500, 502, 503, 529}
 MAX_RETRIES = 3
+DEFAULT_ADMIN_PASSWORD = "admin"
+MIN_PASSWORD_LENGTH = 8
 
 # --- 统计 ---
 _stats: dict[str, Any] = {"total_requests": 0, "by_model": defaultdict(int), "by_provider": defaultdict(int)}
 _stats_lock = asyncio.Lock()
 _start_time: float = time.time()
-_config_path: str = "config.yaml"
+_config_path: str = ".env"
 _admin_tokens: set[str] = set()
+_password_change_required: bool = True  # 首次启动强制改密码标志
 _registry = None
+_proxy_mode: str = "anthropic"  # "anthropic" 或 "openai"
+
+
+def _is_default_password() -> bool:
+    """检查是否使用默认密码"""
+    cfg = get_config()
+    current_pw = cfg.get("admin_password", DEFAULT_ADMIN_PASSWORD)
+    return current_pw == DEFAULT_ADMIN_PASSWORD
+
+
+def _hash_password(password: str) -> str:
+    """哈希密码用于存储（简单实现，生产环境建议使用 bcrypt）"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _validate_password_strength(password: str) -> tuple[bool, str]:
+    """验证密码强度
+
+    Returns:
+        (is_valid, error_message)
+    """
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return False, f"密码长度至少需要 {MIN_PASSWORD_LENGTH} 个字符"
+
+    # 检查是否包含字母
+    has_alpha = any(c.isalpha() for c in password)
+    # 检查是否包含数字
+    has_digit = any(c.isdigit() for c in password)
+
+    if not (has_alpha and has_digit):
+        return False, "密码必须同时包含字母和数字"
+
+    # 检查是否是常见弱密码
+    weak_passwords = {"password", "12345678", "abcdefgh", "qwerty12", "admin123"}
+    if password.lower() in weak_passwords:
+        return False, "密码过于简单，请使用更复杂的密码"
+
+    return True, ""
 
 
 def _get_registry():
@@ -71,6 +116,18 @@ def _mask(d: dict) -> dict:
     k = d.get("api_key", "")
     d["api_key"] = (k[:4] + "****" + k[-4:]) if len(k) > 8 else ("****" if k else "")
     return d
+
+
+def _model_supported_formats(model_id: str) -> list[str]:
+    """获取模型的 supported_formats，不存在则返回空列表"""
+    r = _get_registry()
+    provider = r.get_provider_for_model(model_id)
+    if not provider:
+        return []
+    for m in provider.models:
+        if m.id == model_id:
+            return m.supported_formats
+    return []
 
 
 # ============================================================
@@ -248,6 +305,54 @@ async def openai_non_streaming(openai_req: dict, model: str, provider: Provider)
 
 
 # ============================================================
+# OpenAI -> Anthropic 转换处理
+# ============================================================
+
+async def openai_to_anthropic_streaming(openai_req: dict, model: str, provider: Provider) -> StreamingResponse:
+    """OpenAI 流式 -> Anthropic SSE (用于 OpenAI -> Anthropic 转换)"""
+    url = f"{provider.base_url.rstrip('/')}/v1/messages"
+
+    async def pipe():
+        for attempt in range(MAX_RETRIES):
+            async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
+                async with client.stream("POST", url, json=openai_req, headers=_anthropic_headers(provider)) as resp:
+                    if resp.status_code != 200:
+                        err = ""
+                        async for chunk in resp.aiter_text():
+                            err += chunk
+                        logger.warning(f"<- anthropic stream {resp.status_code} (attempt {attempt+1}): {err[:300]}")
+                        if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                            await asyncio.sleep(attempt + 1)
+                            continue
+                        yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': err[:500]}})}\n\n"
+                        return
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+                    break
+
+    return StreamingResponse(pipe(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+
+
+async def openai_to_anthropic_non_streaming(openai_req: dict, model: str, provider: Provider) -> JSONResponse:
+    """OpenAI 非流式 -> Anthropic JSON (用于 OpenAI -> Anthropic 转换)"""
+    url = f"{provider.base_url.rstrip('/')}/v1/messages"
+    for attempt in range(MAX_RETRIES):
+        async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
+            resp = await client.post(url, json=openai_req, headers=_anthropic_headers(provider))
+            if resp.status_code != 200:
+                logger.warning(f"<- anthropic {resp.status_code} (attempt {attempt+1}): {resp.text[:300]}")
+                if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(attempt + 1)
+                    continue
+            # 将 Anthropic 响应转换为 OpenAI 格式
+            anthropic_resp = resp.json()
+            openai_resp = reverse_convert_response(anthropic_resp)
+            openai_resp["model"] = model
+            return JSONResponse(status_code=resp.status_code, content=openai_resp)
+
+
+# ============================================================
 # FastAPI 应用
 # ============================================================
 
@@ -275,6 +380,17 @@ async def get_model(model_id: str):
 
 @app.post("/v1/messages")
 async def messages_endpoint(request: Request):
+    """Anthropic Messages API 端点
+
+    mode=anthropic 时：
+    - model supported_formats 包含 "anthropic" -> 直通
+    - 否则 -> Anthropic->OpenAI 转换后再发
+
+    mode=openai 时：
+    - 接收 Anthropic 格式，转换为 OpenAI 发送
+    """
+    global _proxy_mode
+
     body = await request.json()
     model = body.get("model", "unknown")
     is_stream = body.get("stream", False)
@@ -285,24 +401,35 @@ async def messages_endpoint(request: Request):
             "type": "error", "error": {"type": "invalid_request_error",
                                         "message": f"Model '{model}' not found in any configured provider"}})
 
-    logger.info(f"-> model={model} provider={provider.name} type={provider.provider_type} stream={is_stream}")
+    supported = _model_supported_formats(model)
+    logger.info(f"-> model={model} provider={provider.name} supported_formats={supported} mode={_proxy_mode} stream={is_stream}")
     await _inc_stats(model, provider.name)
 
     try:
-        if provider.provider_type == "anthropic":
-            # 直通：原样转发 Anthropic 格式
-            if is_stream:
-                return await anthropic_passthrough_streaming(body, provider)
-            else:
-                return await anthropic_passthrough_non_streaming(body, provider)
-        else:
-            # 转换：Anthropic -> OpenAI -> Anthropic
+        if _proxy_mode == "openai":
+            # OpenAI mode: 接收 Anthropic 格式，转换为 OpenAI 发送
             model_map = get_model_map()
             openai_req = convert_request(body, model_map=model_map)
             if is_stream:
                 return await openai_streaming(openai_req, model, provider)
             else:
                 return await openai_non_streaming(openai_req, model, provider)
+        else:
+            # Anthropic mode
+            if "anthropic" in supported:
+                # 直通：原样转发 Anthropic 格式
+                if is_stream:
+                    return await anthropic_passthrough_streaming(body, provider)
+                else:
+                    return await anthropic_passthrough_non_streaming(body, provider)
+            else:
+                # 转换：Anthropic -> OpenAI
+                model_map = get_model_map()
+                openai_req = convert_request(body, model_map=model_map)
+                if is_stream:
+                    return await openai_streaming(openai_req, model, provider)
+                else:
+                    return await openai_non_streaming(openai_req, model, provider)
     except httpx.ConnectError:
         return JSONResponse(status_code=529, content={
             "type": "error", "error": {"type": "overloaded_error",
@@ -311,6 +438,112 @@ async def messages_endpoint(request: Request):
         return JSONResponse(status_code=529, content={
             "type": "error", "error": {"type": "overloaded_error",
                                        "message": f"Upstream request to provider '{provider.name}' timed out"}})
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions_endpoint(request: Request):
+    """OpenAI Chat Completions API 端点
+
+    mode=openai 时：
+    - model supported_formats 包含 "openai" -> 直通
+    - 否则 -> OpenAI->Anthropic 转换后再发
+
+    mode=anthropic 时：
+    - 接收 OpenAI 格式，转换为 Anthropic 发送
+    """
+    global _proxy_mode
+
+    body = await request.json()
+    model = body.get("model", "unknown")
+    is_stream = body.get("stream", False)
+
+    provider = _get_registry().get_provider_for_model(model)
+    if not provider:
+        return JSONResponse(status_code=404, content={
+            "error": {
+                "message": f"Model '{model}' not found in any configured provider",
+                "type": "invalid_request_error",
+                "code": "model_not_found",
+            }})
+
+    supported = _model_supported_formats(model)
+    logger.info(f"-> [openai] model={model} provider={provider.name} supported_formats={supported} mode={_proxy_mode} stream={is_stream}")
+    await _inc_stats(model, provider.name)
+
+    try:
+        if _proxy_mode == "anthropic":
+            # Anthropic mode: 接收 OpenAI 格式，转换为 Anthropic 发送
+            model_map = get_model_map()
+            anthropic_req = reverse_convert_request(body, model_map=model_map)
+            if is_stream:
+                return await openai_to_anthropic_streaming(anthropic_req, model, provider)
+            else:
+                return await openai_to_anthropic_non_streaming(anthropic_req, model, provider)
+        else:
+            # OpenAI mode
+            if "openai" in supported:
+                # 直通：直接 POST 到 /v1/chat/completions
+                url = f"{provider.base_url.rstrip('/')}/v1/chat/completions"
+                hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
+                if is_stream:
+                    return StreamingResponse(
+                        _stream_openai(url, hdrs, body, provider),
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+                    )
+                else:
+                    for attempt in range(MAX_RETRIES):
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
+                            resp = await client.post(url, json=body, headers=hdrs)
+                            if resp.status_code != 200:
+                                logger.warning(f"<- openai {resp.status_code} (attempt {attempt+1}): {resp.text[:300]}")
+                                if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                                    await asyncio.sleep(attempt + 1)
+                                    continue
+                                return JSONResponse(status_code=resp.status_code, content=resp.json())
+                            return JSONResponse(content=resp.json())
+            else:
+                # 转换：OpenAI -> Anthropic
+                model_map = get_model_map()
+                anthropic_req = reverse_convert_request(body, model_map=model_map)
+                if is_stream:
+                    return await openai_to_anthropic_streaming(anthropic_req, model, provider)
+                else:
+                    return await openai_to_anthropic_non_streaming(anthropic_req, model, provider)
+    except httpx.ConnectError:
+        return JSONResponse(status_code=529, content={
+            "error": {
+                "message": f"Failed to connect to provider '{provider.name}'",
+                "type": "overloaded_error",
+                "code": "connection_error",
+            }})
+    except httpx.TimeoutException:
+        return JSONResponse(status_code=529, content={
+            "error": {
+                "message": f"Upstream request to provider '{provider.name}' timed out",
+                "type": "overloaded_error",
+                "code": "timeout",
+            }})
+
+
+async def _stream_openai(url: str, hdrs: dict, body: dict, provider: Provider) -> AsyncGenerator[bytes, None]:
+    """Stream OpenAI responses directly"""
+    for attempt in range(MAX_RETRIES):
+        async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
+            async with client.stream("POST", url, json=body, headers=hdrs) as resp:
+                if resp.status_code != 200:
+                    err = ""
+                    async for chunk in resp.aiter_text():
+                        err += chunk
+                    logger.warning(f"<- openai stream {resp.status_code} (attempt {attempt+1}): {err[:300]}")
+                    if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(attempt + 1)
+                        continue
+                    yield f"data: {json.dumps({'error': {'message': err, 'type': 'api_error'}})}\n\n"
+                    return
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
+                break
 
 
 # ============================================================
@@ -336,40 +569,100 @@ async def _serve_admin():
 
 @app.post("/api/auth")
 async def admin_auth(request: Request):
+    """管理员登录认证
+
+    如果使用默认密码，将返回 requires_password_change 标志，
+    前端应引导用户修改密码
+    """
+    global _password_change_required
+
     data = await request.json()
-    pw = get_config().get("admin_password", "admin")
-    if data.get("password") == pw:
-        token = secrets.token_hex(32)
-        _admin_tokens.add(token)
-        return {"token": token}
-    raise HTTPException(status_code=401, detail="密码错误")
+    pw = get_config().get("admin_password", DEFAULT_ADMIN_PASSWORD)
+    submitted = data.get("password", "")
+
+    if submitted != pw:
+        raise HTTPException(status_code=401, detail="密码错误")
+
+    # 检查是否需要强制修改密码
+    is_default = _is_default_password()
+    requires_change = is_default and _password_change_required
+
+    token = secrets.token_hex(32)
+    _admin_tokens.add(token)
+
+    response = {"token": token, "requires_password_change": requires_change}
+    return response
+
+
+@app.post("/api/auth/check")
+async def admin_check_password_required():
+    """检查是否需要修改密码（用于前端轮询）"""
+    return {"requires_password_change": _is_default_password() and _password_change_required}
 
 
 @app.post("/api/auth/password")
 async def admin_change_password(request: Request):
+    """修改管理员密码
+
+    支持两种模式：
+    1. 首次修改（使用默认密码）：不需要验证当前密码
+    2. 正常修改：需要验证当前密码
+    """
+    global _password_change_required
+
     data = await request.json()
     cfg = get_config()
-    current_pw = cfg.get("admin_password", "admin")
-    if data.get("current_password") != current_pw:
-        raise HTTPException(status_code=401, detail="当前密码错误")
+    current_pw = cfg.get("admin_password", DEFAULT_ADMIN_PASSWORD)
+    is_default = current_pw == DEFAULT_ADMIN_PASSWORD
+
+    # 首次修改默认密码时，不需要验证当前密码（直接用提交的密码验证）
+    if is_default:
+        # 使用提交的密码进行验证
+        submitted_current = data.get("current_password", "")
+        if submitted_current != DEFAULT_ADMIN_PASSWORD:
+            raise HTTPException(status_code=401, detail="当前密码错误")
+    else:
+        # 正常修改密码，需要验证当前密码
+        if data.get("current_password") != current_pw:
+            raise HTTPException(status_code=401, detail="当前密码错误")
+
     new_pw = data.get("new_password", "")
-    if len(new_pw) < 3:
-        raise HTTPException(status_code=400, detail="新密码至少 3 个字符")
+
+    # 验证密码强度
+    is_valid, error_msg = _validate_password_strength(new_pw)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    # 确认密码匹配
+    if new_pw != data.get("confirm_password", ""):
+        raise HTTPException(status_code=400, detail="两次输入的新密码不一致")
+
+    # 保存新密码
     cfg["admin_password"] = new_pw
-    from cc_proxy.config import save_config
     save_config(cfg)
+
     # 清除所有 token，强制重新登录
     _admin_tokens.clear()
-    return {"success": True, "message": "密码已修改"}
+    _password_change_required = False
+
+    return {"success": True, "message": "密码已修改，请重新登录"}
 
 
 @app.get("/api/status")
 async def admin_status():
     sc = get_server_config()
     r = _get_registry()
-    return {"status": "ok", "uptime": int(time.time() - _start_time),
-            "provider_count": len(r.list_providers()), "model_count": len(r.list_all_models()),
-            "proxy_port": sc.get("port", 5566), "address": sc.get("host", "0.0.0.0"), "config_path": _config_path}
+    return {
+        "status": "ok",
+        "uptime": int(time.time() - _start_time),
+        "provider_count": len(r.list_providers()),
+        "model_count": len(r.list_all_models()),
+        "proxy_port": sc.get("port", 5566),
+        "address": sc.get("host", "0.0.0.0"),
+        "config_path": _config_path,
+        "stats": get_stats(),
+        "requires_password_change": _is_default_password() and _password_change_required,
+    }
 
 
 @app.get("/api/providers")
@@ -428,10 +721,11 @@ async def admin_add_model(name: str, request: Request):
     p = r.get_provider(name)
     if not p:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
-    m = Model(id=data["id"], display_name=data.get("display_name", data["id"]))
+    m = Model(id=data["id"], display_name=data.get("display_name", data["id"]),
+              supported_formats=data.get("supported_formats", ["openai", "anthropic"]))
     p.models.append(m)
     r._persist()
-    return {"id": m.id, "display_name": m.display_name, "provider_name": p.name}
+    return {"id": m.id, "display_name": m.display_name, "supported_formats": m.supported_formats, "provider_name": p.name}
 
 
 @app.delete("/api/providers/{name}/models/{model_id}")
@@ -489,9 +783,18 @@ async def catch_all(request: Request, path: str):
         "type": "error", "error": {"type": "not_found_error", "message": f"Endpoint /{path} not found"}})
 
 
-def create_app(config_path: str = "config.yaml") -> FastAPI:
-    global _config_path
+def create_app(config_path: str = ".env", mode: str = "anthropic") -> FastAPI:
+    """创建 FastAPI 应用
+
+    Args:
+        config_path: 配置文件路径
+        mode: 运行模式，"anthropic" 或 "openai"
+            - anthropic: 端口 5566，接收 Claude Code 的 Anthropic 格式请求
+            - openai: 端口 5567，接收其他客户端的 OpenAI 格式请求
+    """
+    global _config_path, _proxy_mode
     _config_path = config_path
+    _proxy_mode = mode
     init_config(config_path)
     _get_registry().reload()
     return app
