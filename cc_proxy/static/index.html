@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CC-Proxy 管理面板</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #0f0f14;
+            --bg-secondary: #1a1a24;
+            --bg-tertiary: #252532;
+            --text-primary: #e4e4e7;
+            --text-secondary: #a1a1aa;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --success: #22c55e;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --border: #3f3f4a;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        .logo span {
+            color: var(--text-primary);
+        }
+
+        nav {
+            background: var(--bg-secondary);
+            padding: 0 2rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .nav-tabs {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .nav-tab {
+            padding: 0.75rem 1.5rem;
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.95rem;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .nav-tab:hover {
+            color: var(--text-primary);
+        }
+
+        .nav-tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
+        main {
+            padding: 2rem;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: var(--bg-secondary);
+            padding: 1.5rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+
+        .stat-card h3 {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .card {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-header h2 {
+            font-size: 1.125rem;
+            font-weight: 600;
+        }
+
+        .card-body {
+            padding: 0;
+        }
+
+        .btn {
+            padding: 0.625rem 1.25rem;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+        }
+
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background: var(--border);
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            opacity: 0.9;
+        }
+
+        .btn-sm {
+            padding: 0.4rem 0.75rem;
+            font-size: 0.8rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 0.875rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            background: var(--bg-tertiary);
+            font-weight: 600;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover td {
+            background: rgba(37, 37, 50, 0.5);
+        }
+
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 0.625rem 0.875rem;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 0.95rem;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            align-items: center;
+            justify-content: center;
+            z-index: 500;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            width: 100%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h3 {
+            font-size: 1.125rem;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 1.5rem;
+            line-height: 1;
+        }
+
+        .modal-close:hover {
+            color: var(--text-primary);
+        }
+
+        .modal-body {
+            padding: 1.5rem;
+        }
+
+        .modal-footer {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.75rem;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.625rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-primary {
+            background: rgba(99, 102, 241, 0.2);
+            color: var(--accent-hover);
+        }
+
+        .actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .model-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .model-chip {
+            background: var(--bg-tertiary);
+            padding: 0.375rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .model-chip button {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 1rem;
+            line-height: 1;
+        }
+
+        .model-chip button:hover {
+            color: var(--danger);
+        }
+
+        .toast-container {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            z-index: 600;
+        }
+
+        .toast {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.5rem;
+            margin-top: 0.75rem;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .toast.success {
+            border-left: 3px solid var(--success);
+        }
+
+        .toast.error {
+            border-left: 3px solid var(--danger);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 2rem;
+            color: var(--text-secondary);
+        }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-dot.online {
+            background: var(--success);
+        }
+
+        .status-dot.offline {
+            background: var(--danger);
+        }
+
+        .status-dot.testing {
+            background: var(--warning);
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        code {
+            background: var(--bg-tertiary);
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        .api-key-cell {
+            font-family: monospace;
+            color: var(--text-secondary);
+        }
+
+        .timeout-badge {
+            color: var(--text-secondary);
+        }
+
+        #login-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: var(--bg-primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        #login-overlay.hidden {
+            display: none;
+        }
+
+        .login-box {
+            background: var(--bg-secondary);
+            padding: 2.5rem 3rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            width: 100%;
+            max-width: 400px;
+        }
+
+        .login-box h2 {
+            text-align: center;
+            margin-bottom: 0.5rem;
+            color: var(--accent);
+        }
+
+        .login-box p {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .login-box input {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            margin-bottom: 1rem;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 1rem;
+        }
+
+        .login-box input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+    <div id="login-overlay">
+        <div class="login-box">
+            <h2>CC-Proxy 管理面板</h2>
+            <p>请输入管理员密码登录</p>
+            <input type="password" id="password-input" placeholder="管理员密码" autofocus>
+            <button class="btn btn-primary" style="width: 100%" onclick="login()">登录</button>
+        </div>
+    </div>
+
+    <div id="app" style="display:none">
+        <header>
+            <div class="logo">CC-<span>Proxy</span> 管理面板</div>
+            <button class="btn btn-secondary btn-sm" onclick="reloadConfig()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 4v6h-6M1 20v-6h6"/>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+                重新加载配置
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="showChangePassword()">
+                修改密码
+            </button>
+        </header>
+
+        <nav>
+            <div class="nav-tabs">
+                <button class="nav-tab active" data-tab="dashboard">仪表板</button>
+                <button class="nav-tab" data-tab="providers">提供商</button>
+                <button class="nav-tab" data-tab="models">模型</button>
+            </div>
+        </nav>
+
+        <main>
+            <!-- 仪表板 -->
+            <div id="dashboard-tab" class="tab-content active">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>服务状态</h3>
+                        <div class="value" style="font-size: 1.5rem">
+                            <span class="status-indicator">
+                                <span class="status-dot online"></span>
+                                <span id="stat-status-text">运行中</span>
+                            </span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>提供商数量</h3>
+                        <div class="value" id="stat-providers">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>模型总数</h3>
+                        <div class="value" id="stat-models">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>代理端口</h3>
+                        <div class="value" id="stat-port">-</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2>系统信息</h2>
+                    </div>
+                    <div class="card-body">
+                        <table>
+                            <tbody>
+                                <tr><td style="font-weight:600">代理地址</td><td id="info-address">-</td></tr>
+                                <tr><td style="font-weight:600">代理端口</td><td id="info-proxy-port">-</td></tr>
+                                <tr><td style="font-weight:600">管理端口</td><td id="info-admin-port">5566</td></tr>
+                                <tr><td style="font-weight:600">运行时间</td><td id="info-uptime">-</td></tr>
+                                <tr><td style="font-weight:600">配置文件</td><td id="info-config-path">-</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 提供商管理 -->
+            <div id="providers-tab" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>提供商列表</h2>
+                        <button class="btn btn-primary" onclick="openProviderModal()">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="12" y1="5" x2="12" y2="19"/>
+                                <line x1="5" y1="12" x2="19" y2="12"/>
+                            </svg>
+                            添加提供商
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <table id="providers-table">
+                            <thead>
+                                <tr>
+                                    <th>名称</th>
+                                    <th>Base URL</th>
+                                    <th>API Key</th>
+                                    <th>超时</th>
+                                    <th>模型数</th>
+                                    <th>状态</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="providers-body"></tbody>
+                        </table>
+                        <div id="providers-empty" class="empty-state" style="display: none">
+                            <p>暂无提供商，请点击"添加提供商"按钮添加</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 模型列表 -->
+            <div id="models-tab" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>所有模型</h2>
+                        <button class="btn btn-primary btn-sm" onclick="testSelectedModels()">测试已选模型</button>
+                    </div>
+                    <div class="card-body">
+                        <table id="models-table">
+                            <thead>
+                                <tr>
+                                    <th><input type="checkbox" id="select-all-models" onchange="toggleAllModels(this)"></th>
+                                    <th>模型 ID</th>
+                                    <th>显示名称</th>
+                                    <th>所属提供商</th>
+                                    <th>类型</th>
+                                    <th>状态</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="models-body"></tbody>
+                        </table>
+                        <div id="models-empty" class="empty-state" style="display: none">
+                            <p>暂无模型</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 提供商编辑模态框 -->
+    <div id="provider-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">添加提供商</h3>
+                <button class="modal-close" onclick="closeProviderModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="provider-form" onsubmit="return false">
+                    <input type="hidden" id="provider-editing-name" value="">
+                    <div class="form-group">
+                        <label>提供商名称</label>
+                        <input type="text" id="provider-name" required placeholder="例如: openai, anthropic">
+                    </div>
+                    <div class="form-group">
+                        <label>Base URL</label>
+                        <input type="url" id="provider-url" required placeholder="https://api.openai.com/v1">
+                    </div>
+                    <div class="form-group">
+                        <label>API Key</label>
+                        <input type="password" id="provider-key" required placeholder="sk-...">
+                    </div>
+                    <div class="form-group">
+                        <label>超时时间 (秒)</label>
+                        <input type="number" id="provider-timeout" value="300" min="1">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeProviderModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveProvider()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模型管理模态框 -->
+    <div id="models-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="models-modal-title">管理模型</h3>
+                <button class="modal-close" onclick="closeModelsModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="models-provider-name">
+                <div class="form-group">
+                    <label>添加新模型</label>
+                    <div style="display: flex; gap: 0.5rem">
+                        <input type="text" id="new-model-id" placeholder="模型 ID (如: gpt-4o)">
+                        <input type="text" id="new-model-display" placeholder="显示名称 (如: GPT-4o)">
+                        <button class="btn btn-primary" onclick="addModel()">添加</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>已有模型</label>
+                    <div id="provider-models-list" class="model-list"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModelsModal()">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="password-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>修改管理密码</h3>
+                <button class="modal-close" onclick="closeChangePassword()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>当前密码</label>
+                    <input type="password" id="current-password" placeholder="输入当前密码">
+                </div>
+                <div class="form-group">
+                    <label>新密码</label>
+                    <input type="password" id="new-password" placeholder="输入新密码">
+                </div>
+                <div class="form-group">
+                    <label>确认新密码</label>
+                    <input type="password" id="confirm-password" placeholder="再次输入新密码">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeChangePassword()">取消</button>
+                <button class="btn btn-primary" onclick="changePassword()">确认修改</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <script>
+        var API_BASE = '/api';
+        var authToken = sessionStorage.getItem('ccProxyToken') || '';
+
+        // --- 认证 ---
+
+        function login() {
+            var password = document.getElementById('password-input').value;
+            if (!password) return;
+            fetch(API_BASE + '/auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: password })
+            })
+            .then(function(r) {
+                if (r.ok) return r.json();
+                throw new Error('密码错误');
+            })
+            .then(function(data) {
+                authToken = data.token;
+                sessionStorage.setItem('ccProxyToken', authToken);
+                showApp();
+            })
+            .catch(function(err) {
+                showToast(err.message, 'error');
+            });
+        }
+
+        document.getElementById('password-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') login();
+        });
+
+        function showApp() {
+            document.getElementById('login-overlay').classList.add('hidden');
+            document.getElementById('app').style.display = '';
+            loadDashboard();
+        }
+
+        // 已有 token 时尝试直接显示
+        if (authToken) {
+            showApp();
+        }
+
+        // --- API 请求封装 ---
+
+        function api(url, options) {
+            options = options || {};
+            var headers = { 'Authorization': 'Bearer ' + authToken };
+            if (options.headers) {
+                Object.keys(options.headers).forEach(function(k) { headers[k] = options.headers[k]; });
+            }
+            return fetch(API_BASE + url, { method: options.method || 'GET', headers: headers, body: options.body });
+        }
+
+        // --- 工具函数 ---
+
+        function showToast(message, type) {
+            type = type || 'success';
+            var container = document.getElementById('toast-container');
+            var toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(function() { toast.remove(); }, 3000);
+        }
+
+        function formatUptime(seconds) {
+            var days = Math.floor(seconds / 86400);
+            var hours = Math.floor((seconds % 86400) / 3600);
+            var mins = Math.floor((seconds % 3600) / 60);
+            var parts = [];
+            if (days > 0) parts.push(days + ' 天');
+            if (hours > 0) parts.push(hours + ' 小时');
+            parts.push(mins + ' 分钟');
+            return parts.join(' ');
+        }
+
+        function escapeHtml(str) {
+            var div = document.createElement('div');
+            div.appendChild(document.createTextNode(str));
+            return div.innerHTML;
+        }
+
+        function escapeAttr(str) {
+            return str.replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // --- 标签页切换 ---
+
+        document.querySelectorAll('.nav-tab').forEach(function(tab) {
+            tab.addEventListener('click', function() {
+                document.querySelectorAll('.nav-tab').forEach(function(t) { t.classList.remove('active'); });
+                document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab + '-tab').classList.add('active');
+
+                if (tab.dataset.tab === 'providers') loadProviders();
+                if (tab.dataset.tab === 'models') loadModels();
+                if (tab.dataset.tab === 'dashboard') loadDashboard();
+            });
+        });
+
+        // --- 仪表板 ---
+
+        function loadDashboard() {
+            api('/status')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    document.getElementById('stat-providers').textContent = data.provider_count != null ? data.provider_count : 0;
+                    document.getElementById('stat-models').textContent = data.model_count != null ? data.model_count : 0;
+                    document.getElementById('stat-port').textContent = data.proxy_port || '-';
+                    document.getElementById('info-address').textContent = data.address || '-';
+                    document.getElementById('info-proxy-port').textContent = data.proxy_port || '-';
+                    document.getElementById('info-admin-port').textContent = data.admin_port || '5566';
+                    document.getElementById('info-config-path').textContent = data.config_path || '-';
+                    document.getElementById('info-uptime').textContent = data.uptime ? formatUptime(data.uptime) : '-';
+                })
+                .catch(function(err) { showToast('加载仪表板失败: ' + err.message, 'error'); });
+        }
+
+        // --- 提供商管理 ---
+
+        function loadProviders() {
+            api('/providers')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var tbody = document.getElementById('providers-body');
+                    var empty = document.getElementById('providers-empty');
+                    tbody.innerHTML = '';
+
+                    var providers = data.providers || [];
+                    if (providers.length === 0) {
+                        empty.style.display = 'block';
+                        document.getElementById('providers-table').style.display = 'none';
+                        return;
+                    }
+
+                    empty.style.display = 'none';
+                    document.getElementById('providers-table').style.display = '';
+
+                    providers.forEach(function(p) {
+                        var tr = document.createElement('tr');
+                        var safeName = escapeAttr(p.name);
+                        var modelCount = (p.models || []).length;
+                        tr.innerHTML =
+                            '<td><strong>' + escapeHtml(p.name) + '</strong></td>' +
+                            '<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeAttr(p.base_url) + '">' + escapeHtml(p.base_url) + '</td>' +
+                            '<td class="api-key-cell">' + escapeHtml(p.api_key || '****') + '</td>' +
+                            '<td class="timeout-badge">' + p.timeout + 's</td>' +
+                            '<td><span class="badge badge-primary">' + modelCount + ' 个</span></td>' +
+                            '<td><span class="status-indicator" id="status-' + safeName + '"><span class="status-dot" style="background:var(--text-secondary)"></span> 未知</span></td>' +
+                            '<td><div class="actions">' +
+                            '<button class="btn btn-secondary btn-sm" onclick="testProvider(\'' + safeName + '\')">测试</button>' +
+                            '<button class="btn btn-secondary btn-sm" onclick="manageModels(\'' + safeName + '\')">模型</button>' +
+                            '<button class="btn btn-secondary btn-sm" onclick="editProvider(\'' + safeName + '\')">编辑</button>' +
+                            '<button class="btn btn-danger btn-sm" onclick="deleteProvider(\'' + safeName + '\')">删除</button>' +
+                            '</div></td>';
+                        tbody.appendChild(tr);
+                    });
+                })
+                .catch(function(err) { showToast('加载提供商失败: ' + err.message, 'error'); });
+        }
+
+        function openProviderModal(provider) {
+            var isEdit = !!provider;
+            document.getElementById('modal-title').textContent = isEdit ? '编辑提供商' : '添加提供商';
+            document.getElementById('provider-editing-name').value = isEdit ? provider.name : '';
+            document.getElementById('provider-name').value = isEdit ? provider.name : '';
+            document.getElementById('provider-url').value = isEdit ? provider.base_url : '';
+            document.getElementById('provider-key').value = isEdit ? provider.api_key : '';
+            document.getElementById('provider-timeout').value = isEdit ? provider.timeout : 300;
+            document.getElementById('provider-name').disabled = isEdit;
+            document.getElementById('provider-modal').classList.add('active');
+        }
+
+        function closeProviderModal() {
+            document.getElementById('provider-modal').classList.remove('active');
+            document.getElementById('provider-form').reset();
+            document.getElementById('provider-name').disabled = false;
+            document.getElementById('provider-editing-name').value = '';
+        }
+
+        function saveProvider() {
+            var name = document.getElementById('provider-name').value.trim();
+            var base_url = document.getElementById('provider-url').value.trim();
+            var api_key = document.getElementById('provider-key').value.trim();
+            var timeout = parseInt(document.getElementById('provider-timeout').value) || 300;
+            var editingName = document.getElementById('provider-editing-name').value;
+
+            if (!name || !base_url || !api_key) {
+                showToast('请填写所有必填字段', 'error');
+                return;
+            }
+
+            var isEdit = !!editingName;
+            var url = isEdit ? '/providers/' + encodeURIComponent(editingName) : '/providers';
+            var method = isEdit ? 'PUT' : 'POST';
+
+            api(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, base_url: base_url, api_key: api_key, timeout: timeout })
+            })
+            .then(function(r) {
+                if (r.ok) return r.json();
+                return r.json().then(function(e) { throw new Error(e.detail || '操作失败'); });
+            })
+            .then(function() {
+                showToast(isEdit ? '提供商已更新' : '提供商已添加');
+                closeProviderModal();
+                loadProviders();
+            })
+            .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
+        function editProvider(name) {
+            api('/providers/' + encodeURIComponent(name))
+                .then(function(r) {
+                    if (r.ok) return r.json();
+                    throw new Error('提供商未找到');
+                })
+                .then(function(data) { openProviderModal(data); })
+                .catch(function(err) { showToast('加载提供商失败: ' + err.message, 'error'); });
+        }
+
+        function deleteProvider(name) {
+            if (!confirm('确定要删除提供商 "' + name + '" 吗？此操作不可撤销。')) return;
+            api('/providers/' + encodeURIComponent(name), { method: 'DELETE' })
+                .then(function(r) {
+                    if (r.ok) {
+                        showToast('提供商 "' + name + '" 已删除');
+                        loadProviders();
+                    } else {
+                        return r.json().then(function(e) { throw new Error(e.detail || '删除失败'); });
+                    }
+                })
+                .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
+        function testProvider(name) {
+            var statusEl = document.getElementById('status-' + name);
+            if (!statusEl) return;
+            statusEl.innerHTML = '<span class="status-dot testing"></span> 测试中...';
+
+            api('/providers/' + encodeURIComponent(name) + '/test', { method: 'POST' })
+                .then(function(r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                })
+                .then(function(data) {
+                    if (data.success) {
+                        statusEl.innerHTML = '<span class="status-dot online"></span> 在线 (' + data.latency + 'ms)';
+                        showToast('"' + name + '" 连接正常 (' + data.latency + 'ms)');
+                    } else {
+                        statusEl.innerHTML = '<span class="status-dot offline"></span> 离线';
+                        showToast('"' + name + '" 连接失败: ' + (data.error || '未知错误'), 'error');
+                    }
+                })
+                .catch(function(err) {
+                    if (statusEl) statusEl.innerHTML = '<span class="status-dot offline"></span> 离线';
+                    showToast('"' + name + '" 测试失败: ' + err.message, 'error');
+                });
+        }
+
+        // --- 模型管理 ---
+
+        function loadModels() {
+            Promise.all([api('/models').then(function(r){return r.json()}), api('/providers').then(function(r){return r.json()})])
+                .then(function(results) {
+                    var data = results[0];
+                    var provData = results[1];
+                    var providerTypes = {};
+                    (provData.providers || []).forEach(function(p) { providerTypes[p.name] = p.type || 'openai'; });
+
+                    var tbody = document.getElementById('models-body');
+                    var empty = document.getElementById('models-empty');
+                    tbody.innerHTML = '';
+
+                    var models = data.models || [];
+                    if (models.length === 0) {
+                        empty.style.display = 'block';
+                        document.getElementById('models-table').style.display = 'none';
+                        return;
+                    }
+
+                    empty.style.display = 'none';
+                    document.getElementById('models-table').style.display = '';
+
+                    models.forEach(function(m) {
+                        var tr = document.createElement('tr');
+                        var ptype = providerTypes[m.provider_name] || 'openai';
+                        var typeLabel = ptype === 'anthropic' ? '直通' : '转换';
+                        var safeId = (m.id).replace(/'/g, "\\'");
+                        var safeName = (m.provider_name).replace(/'/g, "\\'");
+                        tr.innerHTML =
+                            '<td><input type="checkbox" class="model-checkbox" data-model-id="' + escapeHtml(m.id) + '" data-provider="' + escapeHtml(m.provider_name) + '"></td>' +
+                            '<td><code>' + escapeHtml(m.id) + '</code></td>' +
+                            '<td>' + escapeHtml(m.display_name) + '</td>' +
+                            '<td><span class="badge badge-primary">' + escapeHtml(m.provider_name) + '</span></td>' +
+                            '<td><span class="badge" style="background:' + (ptype === 'anthropic' ? 'rgba(34,197,94,0.2);color:#22c55e' : 'rgba(99,102,241,0.2);color:#818cf8') + '">' + typeLabel + '</span></td>' +
+                            '<td><span class="status-indicator" id="model-status-' + safeId.replace(/[^a-zA-Z0-9]/g, '_') + '"><span class="status-dot" style="background:var(--text-secondary)"></span></span></td>' +
+                            '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button></td>';
+                        tbody.appendChild(tr);
+                    });
+                })
+                .catch(function(err) { showToast('加载模型失败: ' + err.message, 'error'); });
+        }
+
+        function toggleAllModels(el) {
+            document.querySelectorAll('.model-checkbox').forEach(function(cb) { cb.checked = el.checked; });
+        }
+
+        function testModel(providerName, modelId) {
+            var statusId = 'model-status-' + modelId.replace(/[^a-zA-Z0-9]/g, '_');
+            var statusEl = document.getElementById(statusId);
+            statusEl.innerHTML = '<span class="status-dot testing"></span> 测试中';
+            api('/providers/' + encodeURIComponent(providerName) + '/test', { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        statusEl.innerHTML = '<span class="status-dot online"></span> 在线';
+                        showToast(modelId + ' 连接正常 (' + data.latency + 'ms)');
+                    } else {
+                        statusEl.innerHTML = '<span class="status-dot offline"></span> 离线';
+                        showToast(modelId + ' 连接失败: ' + (data.error || ''), 'error');
+                    }
+                })
+                .catch(function(err) {
+                    statusEl.innerHTML = '<span class="status-dot offline"></span> 离线';
+                    showToast(modelId + ' 测试失败', 'error');
+                });
+        }
+
+        function testSelectedModels() {
+            var checkboxes = document.querySelectorAll('.model-checkbox:checked');
+            if (checkboxes.length === 0) { showToast('请先勾选要测试的模型', 'error'); return; }
+            checkboxes.forEach(function(cb) {
+                testModel(cb.dataset.provider, cb.dataset.modelId);
+            });
+        }
+
+        function manageModels(providerName) {
+            document.getElementById('models-provider-name').value = providerName;
+            document.getElementById('models-modal-title').textContent = '管理模型 - ' + providerName;
+            document.getElementById('new-model-id').value = '';
+            document.getElementById('new-model-display').value = '';
+
+            api('/providers/' + encodeURIComponent(providerName))
+                .then(function(r) {
+                    if (r.ok) return r.json();
+                    throw new Error('提供商未找到');
+                })
+                .then(function(data) {
+                    var list = document.getElementById('provider-models-list');
+                    list.innerHTML = '';
+                    var models = data.models || [];
+                    if (models.length === 0) {
+                        list.innerHTML = '<span style="color:var(--text-secondary)">暂无模型</span>';
+                    } else {
+                        models.forEach(function(m) {
+                            var chip = document.createElement('div');
+                            chip.className = 'model-chip';
+                            var safeId = escapeAttr(m.id);
+                            var safeProvider = escapeAttr(providerName);
+                            chip.innerHTML = '<span>' + escapeHtml(m.display_name || m.id) + '</span>' +
+                                '<button onclick="removeModel(\'' + safeProvider + '\', \'' + safeId + '\')" title="删除">&times;</button>';
+                            list.appendChild(chip);
+                        });
+                    }
+                    document.getElementById('models-modal').classList.add('active');
+                })
+                .catch(function(err) { showToast('加载模型失败: ' + err.message, 'error'); });
+        }
+
+        function closeModelsModal() {
+            document.getElementById('models-modal').classList.remove('active');
+        }
+
+        function addModel() {
+            var providerName = document.getElementById('models-provider-name').value;
+            var modelId = document.getElementById('new-model-id').value.trim();
+            var displayName = document.getElementById('new-model-display').value.trim() || modelId;
+
+            if (!modelId) {
+                showToast('请输入模型 ID', 'error');
+                return;
+            }
+
+            api('/providers/' + encodeURIComponent(providerName) + '/models', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: modelId, display_name: displayName })
+            })
+            .then(function(r) {
+                if (r.ok) return r.json();
+                return r.json().then(function(e) { throw new Error(e.detail || '添加失败'); });
+            })
+            .then(function() {
+                showToast('模型 "' + modelId + '" 已添加');
+                document.getElementById('new-model-id').value = '';
+                document.getElementById('new-model-display').value = '';
+                manageModels(providerName);
+            })
+            .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
+        function removeModel(providerName, modelId) {
+            if (!confirm('确定删除模型 "' + modelId + '" 吗？')) return;
+            api('/providers/' + encodeURIComponent(providerName) + '/models/' + encodeURIComponent(modelId), { method: 'DELETE' })
+                .then(function(r) {
+                    if (r.ok) {
+                        showToast('模型 "' + modelId + '" 已删除');
+                        manageModels(providerName);
+                    } else {
+                        return r.json().then(function(e) { throw new Error(e.detail || '删除失败'); });
+                    }
+                })
+                .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
+        // --- 配置重载 ---
+
+        function reloadConfig() {
+            api('/config/reload', { method: 'POST' })
+                .then(function(r) {
+                    if (r.ok) return r.json();
+                    throw new Error('重载失败');
+                })
+                .then(function() {
+                    showToast('配置已重新加载');
+                    loadDashboard();
+                })
+                .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
+        function showChangePassword() {
+            document.getElementById('current-password').value = '';
+            document.getElementById('new-password').value = '';
+            document.getElementById('confirm-password').value = '';
+            document.getElementById('password-modal').classList.add('active');
+        }
+
+        function closeChangePassword() {
+            document.getElementById('password-modal').classList.remove('active');
+        }
+
+        function changePassword() {
+            var current = document.getElementById('current-password').value;
+            var newPw = document.getElementById('new-password').value;
+            var confirm = document.getElementById('confirm-password').value;
+            if (!current || !newPw) { showToast('请填写所有字段', 'error'); return; }
+            if (newPw !== confirm) { showToast('两次输入的新密码不一致', 'error'); return; }
+            if (newPw.length < 3) { showToast('新密码至少 3 个字符', 'error'); return; }
+            api('/auth/password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ current_password: current, new_password: newPw })
+            })
+            .then(function(r) {
+                if (r.ok) { showToast('密码已修改，请重新登录'); closeChangePassword(); document.getElementById('app').style.display = 'none'; document.getElementById('login-overlay').style.display = 'flex'; sessionStorage.removeItem('authToken'); }
+                else { return r.json().then(function(e) { throw new Error(e.detail || '修改失败'); }); }
+            })
+            .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
+        // --- 初始化由认证流程触发 ---
+    </script>
+</body>
+</html>

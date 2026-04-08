@@ -1,0 +1,16 @@
+version: "3"
+services:
+  cc-proxy:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "5566:5566"
+    volumes:
+      - ../config.yaml:/app/config.yaml
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
