@@ -17,19 +17,19 @@
 ## 功能简介
 
 ```
-Claude Code  ──►  CC-Proxy (:5566)  ──►  任意大模型
-                      │
-                      ├── Anthropic 直通  ──零转换──►  api.anthropic.com
-                      ├── OpenAI 转换     ──格式转换──►  OpenAI 兼容接口
-                      ├── Kimi / 智谱     ──格式转换──►  月之暗面 / 智谱
-                      └── 本地模型        ──格式转换──►  Ollama / vLLM
+Claude Code ──► :5566 (Anthropic) ──► Anthropic 上游（直通）
+                                    └─► OpenAI 上游（转换）
+
+其他 OpenAI 客户端 ──► :5567 (OpenAI) ──► OpenAI 上游（直通）
+                                     └─► Anthropic 上游（转换）
 ```
 
-CC-Proxy 是 Claude Code 的通用模型网关。前端接收 Anthropic 协议请求，后端根据提供商类型选择**直通转发**或**格式转换**，一个端口搞定代理和管理。
+CC-Proxy 是 Claude Code 的通用模型网关。**双端口设计**：5566 接收 Claude Code 的 Anthropic 格式请求，5567 接收其他客户端的 OpenAI 格式请求。根据 provider 的 `supported_formats` 自动选择**直通**或**格式转换**，一个配置搞定所有路由。
 
 ## 核心特性
 
-- **双路由模式** — Anthropic 直通（零开销）或 OpenAI 格式转换，按提供商自动切换
+- **双端口网关** — 5566 (Anthropic) + 5567 (OpenAI)，分别服务不同客户端
+- **自动格式路由** — provider 支持对应格式则直通，否则自动转换
 - **多提供商** — 不同模型自动路由到不同后端
 - **Web 管理面板** — 浏览器管理提供商、模型、连接测试
 - **支持 `/model`** — 所有配置模型自动出现在 Claude Code 模型列表
@@ -68,21 +68,25 @@ providers:
 ### 2. 启动
 
 ```bash
-# 本地运行
+# 本地运行（双端口）
 pip install -r requirements.txt
-python main.py
+python main.py                    # 同时启动 5566 + 5567
+# 或单端口：python main.py --mode anthropic
 
-# Docker 运行（推荐）
+# Docker 运行（推荐 - 双容器）
 docker build -t cc-proxy -f docker/Dockerfile .
-docker run -d --name cc-proxy -p 5566:5566 \
-  -v $(pwd)/.env:/app/.env \
-  --restart unless-stopped cc-proxy
+docker run -d --name cc-proxy-anthropic -p 5566:5566 \
+  -e CC_MODE=anthropic -e CC_PORT=5566 \
+  -v $(pwd)/.env:/app/.env --restart unless-stopped cc-proxy
+docker run -d --name cc-proxy-openai -p 5567:5567 \
+  -e CC_MODE=openai -e CC_PORT=5567 \
+  -v $(pwd)/.env:/app/.env --restart unless-stopped cc-proxy
 
 # 或使用 Docker Compose
 docker-compose -f docker/docker-compose.yml up -d
 ```
 
-浏览器打开 http://localhost:5566/ 进入管理面板（默认密码 `admin`，首次登录**必须修改密码**）。
+Claude Code 使用 **5566**，其他 OpenAI 客户端使用 **5567**。浏览器打开 http://localhost:5566/ 进入管理面板（默认密码 `admin`，首次登录**必须修改密码**）。
 
 ### 3. 连接 Claude Code
 
@@ -92,8 +96,6 @@ export ANTHROPIC_API_KEY=any-value
 ```
 
 在 Claude Code 中输入 `/model` 即可切换模型。
-
-### 双端口架构
 
 ```
 Claude Code ──► :5566 (Anthropic) ──► Anthropic 上游（直通）
@@ -149,12 +151,15 @@ providers:
         supported_formats: ["openai"]
 ```
 
-## 提供商类型
+## 格式路由说明
 
-| `type` | 行为 | 适用场景 |
-|--------|------|----------|
-| `"anthropic"` | 原样转发，不转换 | Anthropic 官方 API、Anthropic 兼容中转站 |
-| `"openai"`（默认） | Anthropic ↔ OpenAI 格式转换 | Kimi、智谱、DeepSeek、Ollama 等 |
+每个 provider 和 model 都有 `supported_formats` 字段：
+
+| supported_formats | 请求格式匹配时 | 请求格式不匹配时 |
+|-------------------|---------------|-----------------|
+| `["anthropic"]` | 直通 Anthropic 上游 | 转换后发给 OpenAI 上游 |
+| `["openai"]` | 直通 OpenAI 上游 | 转换后发给 Anthropic 上游 |
+| `["openai", "anthropic"]` | 直通（两者都支持） | — |
 
 ## 运行测试
 
@@ -173,21 +178,19 @@ BSD 2-Clause — 详见 [LICENSE](LICENSE)。
 ## What It Does
 
 ```
-Claude Code  ──►  CC-Proxy (:5566)  ──►  Any LLM Provider
-                      │
-                      ├── Anthropic API  ──passthrough──►  api.anthropic.com
-                      ├── OpenAI API     ──convert─────►  any OpenAI-compatible
-                      ├── Kimi / Zhipu   ──convert─────►  moonshot / bigmodel
-                      └── Local (Ollama) ──convert─────►  localhost:11434
+Claude Code ──► :5566 (Anthropic) ──► Anthropic upstream (passthrough)
+                                    └─► OpenAI upstream (convert)
+
+Other OpenAI clients ──► :5567 (OpenAI) ──► OpenAI upstream (passthrough)
+                                     └─► Anthropic upstream (convert)
 ```
 
-CC-Proxy sits between Claude Code and your model providers. It speaks Anthropic's native protocol on the front end, and either passes requests through unchanged (for Anthropic-native backends) or converts them to OpenAI format (for everything else).
-
-**One port, one process** — the built-in web UI manages providers, models, and configuration at `http://host:5566/`.
+CC-Proxy sits between Claude Code and your model providers. **Dual-port design**: port 5566 receives Anthropic format requests from Claude Code, port 5567 receives OpenAI format requests from other clients. Based on each provider's `supported_formats`, requests are either **passed through** or **converted**.
 
 ## Key Features
 
-- **Dual routing mode** — Anthropic passthrough (zero overhead) or OpenAI conversion, per-provider
+- **Dual-port gateway** — 5566 (Anthropic) + 5567 (OpenAI), serving different clients
+- **Automatic format routing** — passthrough if provider supports the format, auto-convert otherwise
 - **Multi-provider** — route different models to different backends automatically
 - **Web admin panel** — add/edit/delete providers and models from the browser
 - **`/model` ready** — all configured models appear in Claude Code's model picker
@@ -226,21 +229,25 @@ providers:
 ### 2. Run
 
 ```bash
-# pip
+# pip (dual-port by default)
 pip install -r requirements.txt
-python main.py
+python main.py                    # starts both 5566 + 5567
+# or single port: python main.py --mode anthropic
 
-# Docker (with .env file)
+# Docker (recommended - dual containers)
 docker build -t cc-proxy -f docker/Dockerfile .
-docker run -d --name cc-proxy -p 5566:5566 \
-  -v $(pwd)/.env:/app/.env \
-  --restart unless-stopped cc-proxy
+docker run -d --name cc-proxy-anthropic -p 5566:5566 \
+  -e CC_MODE=anthropic -e CC_PORT=5566 \
+  -v $(pwd)/.env:/app/.env --restart unless-stopped cc-proxy
+docker run -d --name cc-proxy-openai -p 5567:5567 \
+  -e CC_MODE=openai -e CC_PORT=5567 \
+  -v $(pwd)/.env:/app/.env --restart unless-stopped cc-proxy
 
 # Or use Docker Compose
 docker-compose -f docker/docker-compose.yml up -d
 ```
 
-Open http://localhost:5566/ for the admin panel (default password `admin`, **must change on first login**).
+Claude Code uses **5566**, other OpenAI clients use **5567**. Open http://localhost:5566/ for the admin panel (default password `admin`, **must change on first login**).
 
 ### 3. Connect Claude Code
 
@@ -250,8 +257,6 @@ export ANTHROPIC_API_KEY=any-value
 ```
 
 Type `/model` in Claude Code to see and switch between all configured models.
-
-### Dual-Port Architecture
 
 ```
 Claude Code ──► :5566 (Anthropic) ──► Anthropic upstream (passthrough)
@@ -307,12 +312,15 @@ providers:
         supported_formats: ["openai"]
 ```
 
-## Provider Types
+## Format Routing
 
-| `type` | Behavior | Use For |
-|--------|----------|---------|
-| `"anthropic"` | Pass requests through unchanged | Anthropic API, Anthropic-compatible relays |
-| `"openai"` (default) | Convert Anthropic ↔ OpenAI format | OpenAI, Kimi, Zhipu, DeepSeek, Ollama, vLLM |
+Each provider and model has a `supported_formats` field:
+
+| supported_formats | Request format matches | Request format doesn't match |
+|-------------------|----------------------|----------------------------|
+| `["anthropic"]` | Passthrough to Anthropic upstream | Convert, send to OpenAI upstream |
+| `["openai"]` | Passthrough to OpenAI upstream | Convert, send to Anthropic upstream |
+| `["openai", "anthropic"]` | Passthrough (both supported) | — |
 
 ## Project Structure
 
