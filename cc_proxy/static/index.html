@@ -359,6 +359,25 @@
             color: var(--danger);
         }
 
+        .model-chip .fmt-badge {
+            font-size: 0.65rem;
+            padding: 1px 5px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+        .model-chip .fmt-openai {
+            background: #238636;
+            color: #fff;
+        }
+        .model-chip .fmt-anthropic {
+            background: #e67e22;
+            color: #fff;
+        }
+        .model-chip .fmt-both {
+            background: linear-gradient(135deg, #238636 50%, #e67e22 50%);
+            color: #fff;
+        }
+
         .toast-container {
             position: fixed;
             bottom: 2rem;
@@ -508,7 +527,10 @@
         <div class="login-box">
             <h2>CC-Proxy 管理面板</h2>
             <p>请输入管理员密码登录</p>
-            <input type="password" id="password-input" placeholder="管理员密码" autofocus>
+            <div style="position:relative">
+                <input type="password" id="password-input" placeholder="管理员密码" autofocus>
+                <button type="button" onclick="togglePassword()" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#888;padding:2px 6px;font-size:14px">👁</button>
+            </div>
             <button class="btn btn-primary" style="width: 100%" onclick="login()">登录</button>
         </div>
     </div>
@@ -526,6 +548,8 @@
             <button class="btn btn-secondary btn-sm" onclick="showChangePassword()">
                 修改密码
             </button>
+            <span id="current-user" style="color:#e0e0e0;font-size:14px;margin-left:12px;font-weight:500">当前登录：admin</span>
+            <button class="btn btn-danger btn-sm" onclick="logout()" style="margin-left:4px">退出</button>
         </header>
 
         <nav>
@@ -731,15 +755,24 @@
             <div class="modal-body">
                 <div class="form-group">
                     <label>当前密码</label>
-                    <input type="password" id="current-password" placeholder="输入当前密码">
+                    <div style="position:relative">
+                        <input type="password" id="current-password" placeholder="输入当前密码">
+                        <button type="button" onclick="togglePwdField('current-password',this)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#888;padding:2px 6px;font-size:14px">👁</button>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label>新密码</label>
-                    <input type="password" id="new-password" placeholder="输入新密码">
+                    <div style="position:relative">
+                        <input type="password" id="new-password" placeholder="输入新密码">
+                        <button type="button" onclick="togglePwdField('new-password',this)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#888;padding:2px 6px;font-size:14px">👁</button>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label>确认新密码</label>
-                    <input type="password" id="confirm-password" placeholder="再次输入新密码">
+                    <div style="position:relative">
+                        <input type="password" id="confirm-password" placeholder="再次输入新密码">
+                        <button type="button" onclick="togglePwdField('confirm-password',this)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#888;padding:2px 6px;font-size:14px">👁</button>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -790,10 +823,29 @@
             if (e.key === 'Enter') login();
         });
 
+        function togglePassword() {
+            var inp = document.getElementById('password-input');
+            inp.type = inp.type === 'password' ? 'text' : 'password';
+        }
+
+        function togglePwdField(id, btn) {
+            var inp = document.getElementById(id);
+            inp.type = inp.type === 'password' ? 'text' : 'password';
+        }
+
         function showApp() {
             document.getElementById('login-overlay').classList.add('hidden');
             document.getElementById('app').style.display = '';
             loadDashboard();
+        }
+
+        function logout() {
+            sessionStorage.removeItem('ccProxyToken');
+            authToken = null;
+            document.getElementById('app').style.display = 'none';
+            document.getElementById('login-overlay').classList.remove('hidden');
+            document.getElementById('password-input').value = '';
+            document.getElementById('password-input').focus();
         }
 
         // 已有 token 时尝试直接显示
@@ -902,8 +954,12 @@
                         var tr = document.createElement('tr');
                         var safeName = escapeAttr(p.name);
                         var modelCount = (p.models || []).length;
+                        var fmts = p.supported_formats || ['openai', 'anthropic'];
+                        var fmtBadges = '';
+                        if (fmts.includes('openai')) fmtBadges += ' <span class="fmt-badge fmt-openai">O</span>';
+                        if (fmts.includes('anthropic')) fmtBadges += ' <span class="fmt-badge fmt-anthropic">A</span>';
                         tr.innerHTML =
-                            '<td><strong>' + escapeHtml(p.name) + '</strong></td>' +
+                            '<td><strong>' + escapeHtml(p.name) + '</strong>' + fmtBadges + '</td>' +
                             '<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeAttr(p.base_url) + '">' + escapeHtml(p.base_url) + '</td>' +
                             '<td class="api-key-cell">' + escapeHtml(p.api_key || '****') + '</td>' +
                             '<td class="timeout-badge">' + p.timeout + 's</td>' +
@@ -1132,7 +1188,16 @@
                             chip.className = 'model-chip';
                             var safeId = escapeAttr(m.id);
                             var safeProvider = escapeAttr(providerName);
-                            chip.innerHTML = '<span>' + escapeHtml(m.display_name || m.id) + '</span>' +
+                            var fmts = m.supported_formats || ['openai', 'anthropic'];
+                            var badgeHtml = '';
+                            if (fmts.length === 2) {
+                                badgeHtml = '<span class="fmt-badge fmt-both">A+O</span>';
+                            } else if (fmts.includes('openai')) {
+                                badgeHtml = '<span class="fmt-badge fmt-openai">O</span>';
+                            } else if (fmts.includes('anthropic')) {
+                                badgeHtml = '<span class="fmt-badge fmt-anthropic">A</span>';
+                            }
+                            chip.innerHTML = badgeHtml + '<span>' + escapeHtml(m.display_name || m.id) + '</span>' +
                                 '<button onclick="removeModel(\'' + safeProvider + '\', \'' + safeId + '\')" title="删除">&times;</button>';
                             list.appendChild(chip);
                         });
