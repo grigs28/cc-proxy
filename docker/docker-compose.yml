@@ -9,8 +9,10 @@ services:
     environment:
       - CC_MODE=anthropic
       - CC_PORT=5566
+      - TZ=Asia/Shanghai
     volumes:
       - ../.env:/app/.env
+      - /etc/localtime:/etc/localtime:ro
     restart: unless-stopped
     logging:
       driver: json-file
@@ -26,8 +28,10 @@ services:
     environment:
       - CC_MODE=openai
       - CC_PORT=5567
+      - TZ=Asia/Shanghai
     volumes:
       - ../.env:/app/.env
+      - /etc/localtime:/etc/localtime:ro
     restart: unless-stopped
     logging:
       driver: json-file

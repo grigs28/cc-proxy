@@ -1,7 +1,7 @@
 """cc-proxy: Claude Code 多模型代理服务"""
 __version__ = "0.2.0"
 
-from cc_proxy.config import get_config, get_model_map, get_server_config, init_config, reload_config
+from cc_proxy.config import get_config, get_model_map, get_server_config, init_config, reload_config, verify_password
 from cc_proxy.converter import (
     FINISH_REASON_MAP,
     build_content_block_delta_event,

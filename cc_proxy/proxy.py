@@ -1,6 +1,5 @@
 """主代理 FastAPI 应用 - 多提供商路由 + Anthropic 直通 + 管理界面"""
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -13,9 +12,9 @@ from typing import Any, AsyncGenerator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from cc_proxy.config import get_config, get_model_map, get_server_config, init_config, is_default_password, reload_config, save_config
+from cc_proxy.config import get_config, get_model_map, get_server_config, init_config, is_default_password, reload_config, save_config, verify_password, _hash_password
 from cc_proxy.converter import (
     FINISH_REASON_MAP,
     build_content_block_delta_event,
@@ -38,7 +37,6 @@ logger = logging.getLogger("cc-proxy")
 
 VERSION = "0.3.0"
 ANTHROPIC_VERSION = "2023-06-01"
-OPENAI_API_VERSION = "2024-06-01"
 RETRY_STATUSES = {404, 429, 500, 502, 503, 529}
 MAX_RETRIES = 3
 DEFAULT_ADMIN_PASSWORD = "admin"
@@ -49,7 +47,8 @@ _stats: dict[str, Any] = {"total_requests": 0, "by_model": defaultdict(int), "by
 _stats_lock = asyncio.Lock()
 _start_time: float = time.time()
 _config_path: str = ".env"
-_admin_tokens: set[str] = set()
+_admin_tokens: dict[str, float] = {}  # token -> 创建时间戳
+_TOKEN_TTL: int = 1800  # 30 分钟过期
 _password_change_required: bool = True  # 首次启动强制改密码标志
 _registry = None
 _proxy_mode: str = "anthropic"  # "anthropic" 或 "openai"
@@ -58,18 +57,28 @@ _proxy_port: int = 5566  # 实际监听端口
 
 def _is_default_password() -> bool:
     """检查是否使用默认密码"""
-    cfg = get_config()
-    current_pw = cfg.get("admin_password", DEFAULT_ADMIN_PASSWORD)
-    return current_pw == DEFAULT_ADMIN_PASSWORD
-
-
-def _hash_password(password: str) -> str:
-    """哈希密码用于存储（简单实现，生产环境建议使用 bcrypt）"""
-    return hashlib.sha256(password.encode()).hexdigest()
+    return is_default_password()
 
 
 def _dedupe_base_url_path(base_url: str, target_url: str) -> str:
-    """不做任何 URL 变换，直接返回原 URL"""
+    """去除 URL 路径中与 base_url 尾部重复的段
+
+    例: base="http://host/v1", target="http://host/v1/v1/messages"
+        → "http://host/v1/messages"
+    """
+    if not base_url or not target_url:
+        return target_url
+
+    base_path = base_url.rstrip("/").split("//")[-1]
+    if "/" in base_path:
+        last_segment = "/" + base_path.rsplit("/", 1)[-1]
+    else:
+        return target_url
+
+    doubled = last_segment + last_segment
+    if doubled in target_url:
+        return target_url.replace(doubled, last_segment, 1)
+
     return target_url
 
 
@@ -185,6 +194,7 @@ async def anthropic_passthrough_non_streaming(body: dict, provider: Provider) ->
                 if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(attempt + 1)
                     continue
+                return JSONResponse(status_code=resp.status_code, content=resp.json())
             return JSONResponse(status_code=resp.status_code, content=resp.json())
 
 
@@ -321,51 +331,28 @@ async def openai_non_streaming(openai_req: dict, model: str, provider: Provider)
 
 
 # ============================================================
-# OpenAI -> Anthropic 转换处理
+# Anthropic 格式请求（复用直通函数）
 # ============================================================
 
-async def openai_to_anthropic_streaming(openai_req: dict, model: str, provider: Provider) -> StreamingResponse:
-    """OpenAI 流式 -> Anthropic SSE (用于 OpenAI -> Anthropic 转换)"""
-    base_url = provider.get_base_url("anthropic")
-    raw_url = f"{base_url.rstrip('/')}/v1/messages"
-    url = _dedupe_base_url_path(base_url, raw_url)
-
-    async def pipe():
-        for attempt in range(MAX_RETRIES):
-            async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
-                async with client.stream("POST", url, json=openai_req, headers=_anthropic_headers(provider)) as resp:
-                    if resp.status_code != 200:
-                        err = ""
-                        async for chunk in resp.aiter_text():
-                            err += chunk
-                        logger.warning(f"<- anthropic stream {resp.status_code} (attempt {attempt+1}): {err[:300]}")
-                        if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
-                            await asyncio.sleep(attempt + 1)
-                            continue
-                        yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': err[:500]}})}\n\n"
-                        return
-                    async for chunk in resp.aiter_bytes():
-                        yield chunk
-                    break
-
-    return StreamingResponse(pipe(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+async def openai_to_anthropic_streaming(anthropic_req: dict, model: str, provider: Provider) -> StreamingResponse:
+    """Anthropic 流式直传（用于 OpenAI 模式收到 Anthropic 格式请求）"""
+    return await anthropic_passthrough_streaming(anthropic_req, provider)
 
 
-async def openai_to_anthropic_non_streaming(openai_req: dict, model: str, provider: Provider) -> JSONResponse:
-    """OpenAI 非流式 -> Anthropic JSON (用于 OpenAI -> Anthropic 转换)"""
+async def openai_to_anthropic_non_streaming(anthropic_req: dict, model: str, provider: Provider) -> JSONResponse:
+    """Anthropic 非流式直传，然后将响应转换为 OpenAI 格式"""
     base_url = provider.get_base_url("anthropic")
     raw_url = f"{base_url.rstrip('/')}/v1/messages"
     url = _dedupe_base_url_path(base_url, raw_url)
     for attempt in range(MAX_RETRIES):
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
-            resp = await client.post(url, json=openai_req, headers=_anthropic_headers(provider))
+            resp = await client.post(url, json=anthropic_req, headers=_anthropic_headers(provider))
             if resp.status_code != 200:
                 logger.warning(f"<- anthropic {resp.status_code} (attempt {attempt+1}): {resp.text[:300]}")
                 if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(attempt + 1)
                     continue
-            # 将 Anthropic 响应转换为 OpenAI 格式
+                return JSONResponse(status_code=resp.status_code, content=resp.json())
             anthropic_resp = resp.json()
             openai_resp = reverse_convert_response(anthropic_resp)
             openai_resp["model"] = model
@@ -377,6 +364,31 @@ async def openai_to_anthropic_non_streaming(openai_req: dict, model: str, provid
 # ============================================================
 
 app = FastAPI(title="cc-proxy", version=VERSION)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """认证中间件：保护 /api/* 端点（/api/auth 除外）"""
+    path = request.url.path
+
+    # 不需要认证的路径
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    if path in ("/api/auth", "/api/auth/check"):
+        return await call_next(request)
+
+    # 检查 Bearer token
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        created = _admin_tokens.get(token)
+        if created and (time.time() - created) < _TOKEN_TTL:
+            return await call_next(request)
+        # 清理过期 token
+        if token in _admin_tokens:
+            del _admin_tokens[token]
+
+    return JSONResponse(status_code=401, content={"detail": "未授权访问，请先登录"})
 
 
 @app.get("/health")
@@ -409,8 +421,6 @@ async def messages_endpoint(request: Request):
     mode=openai 时：
     - 接收 Anthropic 格式，转换为 OpenAI 发送
     """
-    global _proxy_mode
-
     body = await request.json()
     model = body.get("model", "unknown")
     is_stream = body.get("stream", False)
@@ -471,8 +481,6 @@ async def chat_completions_endpoint(request: Request):
     mode=anthropic 时：
     - 接收 OpenAI 格式，转换为 Anthropic 发送
     """
-    global _proxy_mode
-
     body = await request.json()
     model = body.get("model", "unknown")
     is_stream = body.get("stream", False)
@@ -587,8 +595,7 @@ async def _serve_admin():
     if not p.exists():
         raise HTTPException(status_code=404, detail="index.html not found")
     content = p.read_bytes()
-    from starlette.responses import Response
-    return Response(content=content, media_type="text/html", headers={"Content-Length": str(len(content))})
+    return HTMLResponse(content=content, headers={"Content-Length": str(len(content))})
 
 
 @app.post("/api/auth")
@@ -601,10 +608,10 @@ async def admin_auth(request: Request):
     global _password_change_required
 
     data = await request.json()
-    pw = get_config().get("admin_password", DEFAULT_ADMIN_PASSWORD)
+    stored_pw = get_config().get("admin_password", DEFAULT_ADMIN_PASSWORD)
     submitted = data.get("password", "")
 
-    if submitted != pw:
+    if not verify_password(submitted, stored_pw):
         raise HTTPException(status_code=401, detail="密码错误")
 
     # 检查是否需要强制修改密码
@@ -612,7 +619,7 @@ async def admin_auth(request: Request):
     requires_change = is_default and _password_change_required
 
     token = secrets.token_hex(32)
-    _admin_tokens.add(token)
+    _admin_tokens[token] = time.time()
 
     response = {"token": token, "requires_password_change": requires_change}
     return response
@@ -637,17 +644,16 @@ async def admin_change_password(request: Request):
     data = await request.json()
     cfg = get_config()
     current_pw = cfg.get("admin_password", DEFAULT_ADMIN_PASSWORD)
-    is_default = current_pw == DEFAULT_ADMIN_PASSWORD
+    is_default = _is_default_password()
 
-    # 首次修改默认密码时，不需要验证当前密码（直接用提交的密码验证）
+    # 首次修改默认密码时，验证默认密码
     if is_default:
-        # 使用提交的密码进行验证
         submitted_current = data.get("current_password", "")
-        if submitted_current != DEFAULT_ADMIN_PASSWORD:
+        if not verify_password(submitted_current, DEFAULT_ADMIN_PASSWORD):
             raise HTTPException(status_code=401, detail="当前密码错误")
     else:
         # 正常修改密码，需要验证当前密码
-        if data.get("current_password") != current_pw:
+        if not verify_password(data.get("current_password", ""), current_pw):
             raise HTTPException(status_code=401, detail="当前密码错误")
 
     new_pw = data.get("new_password", "")
@@ -661,8 +667,8 @@ async def admin_change_password(request: Request):
     if new_pw != data.get("confirm_password", ""):
         raise HTTPException(status_code=400, detail="两次输入的新密码不一致")
 
-    # 保存新密码
-    cfg["admin_password"] = new_pw
+    # 哈希后保存
+    cfg["admin_password"] = _hash_password(new_pw)
     save_config(cfg)
 
     # 清除所有 token，强制重新登录
@@ -796,35 +802,22 @@ async def _fetch_models_from_endpoint(base_url: str, api_key: str, fmt: str) -> 
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         if fmt == "openai":
-            # OpenAI: GET /models
-            try:
-                raw_url = f"{base_url.rstrip('/')}/models"
-                url = _dedupe_base_url_path(base_url, raw_url)
-                hdrs = {"Authorization": f"Bearer {api_key}"}
-                resp = await client.get(url, headers=hdrs)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    models = parse_models(data)
-                    return True, models, ""
-                else:
-                    return False, [], f"HTTP {resp.status_code}"
-            except Exception as e:
-                return False, [], str(e)
+            raw_url = f"{base_url.rstrip('/')}/v1/models"
+            hdrs = {"Authorization": f"Bearer {api_key}"}
         else:
-            # Anthropic: GET /v1/models
-            try:
-                raw_url = f"{base_url.rstrip('/')}/v1/models"
-                url = _dedupe_base_url_path(base_url, raw_url)
-                hdrs = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
-                resp = await client.get(url, headers=hdrs)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    models = parse_models(data)
-                    return True, models, ""
-                else:
-                    return False, [], f"HTTP {resp.status_code}"
-            except Exception as e:
-                return False, [], str(e)
+            raw_url = f"{base_url.rstrip('/')}/v1/models"
+            hdrs = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+        url = _dedupe_base_url_path(base_url, raw_url)
+        try:
+            resp = await client.get(url, headers=hdrs)
+            if resp.status_code == 200:
+                data = resp.json()
+                models = parse_models(data)
+                return True, models, ""
+            else:
+                return False, [], f"HTTP {resp.status_code}"
+        except Exception as e:
+            return False, [], str(e)
 
 
 @app.get("/api/providers/{name}/models")
@@ -921,61 +914,44 @@ async def _test_connectivity(base_url: str, api_key: str, fmt: str) -> dict:
     error = None
     method_used = None
 
-    # 定义两种测试方法
+    if fmt == "openai":
+        hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        endpoints = {
+            "GET": f"{base_url.rstrip('/')}/v1/models",
+            "POST": f"{base_url.rstrip('/')}/v1/chat/completions",
+        }
+    else:
+        hdrs = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json"}
+        endpoints = {
+            "GET": f"{base_url.rstrip('/')}/v1/models",
+            "POST": f"{base_url.rstrip('/')}/v1/messages",
+        }
+
+    post_body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
+
     async with httpx.AsyncClient(timeout=10.0) as client:
-        if fmt == "openai":
-            # OpenAI: 尝试 GET /models 和 POST /chat/completions
-            for method in ["GET", "POST"]:
-                try:
-                    hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-                    if method == "GET":
-                        raw_url = f"{base_url.rstrip('/')}/models"
-                        resp = await client.get(raw_url, headers=hdrs)
-                    else:
-                        raw_url = f"{base_url.rstrip('/')}/chat/completions"
-                        body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
-                        resp = await client.post(raw_url, json=body, headers=hdrs)
-                    latency = int((time.time() - t0) * 1000)
-                    # 2xx, 401(认证失败但端点通), 529(过载但端点通) 都算通
-                    if resp.status_code in (200, 401, 529):
-                        success = True
-                        method_used = method
-                        if resp.status_code == 401:
-                            error = "key无效"
-                        elif resp.status_code == 529:
-                            error = "服务过载"
-                        break
-                    else:
-                        error = f"HTTP {resp.status_code}"
-                except Exception as e:
-                    error = str(e)
-            return {"success": success, "latency": latency, "url": base_url, "error": error, "method": method_used}
-        else:
-            # Anthropic: 尝试 GET /v1/models 和 POST /v1/messages
-            for method in ["GET", "POST"]:
-                try:
-                    hdrs = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json"}
-                    if method == "GET":
-                        raw_url = f"{base_url.rstrip('/')}/v1/models"
-                        resp = await client.get(raw_url, headers=hdrs)
-                    else:
-                        raw_url = f"{base_url.rstrip('/')}/v1/messages"
-                        body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
-                        resp = await client.post(raw_url, json=body, headers=hdrs)
-                    latency = int((time.time() - t0) * 1000)
-                    if resp.status_code in (200, 401, 529):
-                        success = True
-                        method_used = method
-                        if resp.status_code == 401:
-                            error = "key无效"
-                        elif resp.status_code == 529:
-                            error = "服务过载"
-                        break
-                    else:
-                        error = f"HTTP {resp.status_code}"
-                except Exception as e:
-                    error = str(e)
-            return {"success": success, "latency": latency, "url": base_url, "error": error, "method": method_used}
+        for method in ["GET", "POST"]:
+            try:
+                url = endpoints[method]
+                if method == "GET":
+                    resp = await client.get(url, headers=hdrs)
+                else:
+                    resp = await client.post(url, json=post_body, headers=hdrs)
+                latency = int((time.time() - t0) * 1000)
+                if resp.status_code in (200, 401, 529):
+                    success = True
+                    method_used = method
+                    if resp.status_code == 401:
+                        error = "key无效"
+                    elif resp.status_code == 529:
+                        error = "服务过载"
+                    break
+                else:
+                    error = f"HTTP {resp.status_code}"
+            except Exception as e:
+                error = str(e)
+
+    return {"success": success, "latency": latency, "url": base_url, "error": error, "method": method_used}
 
 
 @app.post("/api/providers/{name}/test")
@@ -1026,11 +1002,14 @@ def create_app(config_path: str = ".env", mode: str = "anthropic", port: int = N
             - openai: 端口 5567，接收其他客户端的 OpenAI 格式请求
         port: 实际监听端口
     """
-    global _config_path, _proxy_mode, _proxy_port
+    global _config_path, _proxy_mode, _proxy_port, _password_change_required
     _config_path = config_path
     _proxy_mode = mode
     if port is not None:
         _proxy_port = port
     init_config(config_path)
     _get_registry().reload()
+    # 如果密码不是默认密码，说明已经修改过
+    if not _is_default_password():
+        _password_change_required = False
     return app

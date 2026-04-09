@@ -76,9 +76,13 @@ class Provider:
         base_url_openai = data.get("base_url_openai", "")
         base_url_anthropic = data.get("base_url_anthropic", "")
 
-        # 规范化 base_url
+        # 规范化所有 base_url 字段
         if base_url:
             base_url = cls._normalize_base_url(base_url)
+        if base_url_openai:
+            base_url_openai = cls._normalize_base_url(base_url_openai)
+        if base_url_anthropic:
+            base_url_anthropic = cls._normalize_base_url(base_url_anthropic)
 
         # 如果新的双 URL 字段为空，从旧的 base_url 推导
         if not base_url_openai and not base_url_anthropic and base_url:
@@ -91,11 +95,9 @@ class Provider:
             else:
                 # 两种格式都支持，假设 base_url 是 openai 格式
                 base_url_openai = base_url
-                # 尝试推导 anthropic URL（常见模式：去掉 /v1 或 /anthropic）
+                # 尝试推导 anthropic URL
                 if base_url.endswith("/anthropic"):
                     base_url_anthropic = base_url
-                elif base_url.endswith("/v1"):
-                    base_url_anthropic = base_url[:-3] if base_url.endswith("/v1") else base_url
                 else:
                     base_url_anthropic = base_url + "/anthropic"
 

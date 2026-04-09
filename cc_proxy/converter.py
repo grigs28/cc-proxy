@@ -15,6 +15,8 @@ FINISH_REASON_MAP = {
     "content_filter": "end_turn",
 }
 
+REVERSE_FINISH_REASON_MAP = {v: k for k, v in FINISH_REASON_MAP.items()}
+
 
 # --- Utility Functions ---
 
@@ -476,6 +478,7 @@ def reverse_convert_message(msg: dict) -> dict:
 
     if role == "assistant":
         text_parts = []
+        image_blocks = []
         tool_uses = []
 
         if isinstance(content, str) and content:
@@ -485,10 +488,9 @@ def reverse_convert_message(msg: dict) -> dict:
                 if block.get("type") == "text":
                     text_parts.append(block.get("text", ""))
                 elif block.get("type") == "image_url":
-                    # Convert image_url to image block
                     img = reverse_convert_content_block(block)
                     if img:
-                        text_parts.append(img)
+                        image_blocks.append(img)
 
         # Handle tool_calls
         tool_calls = msg.get("tool_calls", [])
@@ -508,7 +510,8 @@ def reverse_convert_message(msg: dict) -> dict:
 
         blocks = []
         if text_parts:
-            blocks.append({"type": "text", "text": "\n".join(text_parts)})
+            blocks.append({"type": "text", "text": "\n".join(str(p) for p in text_parts)})
+        blocks.extend(image_blocks)
         blocks.extend(tool_uses)
 
         if not blocks:
@@ -615,9 +618,11 @@ def reverse_convert_request(openai_req: dict, model_map: dict | None = None) -> 
 
     anthropic_req["messages"] = converted_messages
 
-    # max_tokens: pass through
+    # max_tokens: pass through, default to 4096 if not specified (Anthropic requires it)
     if "max_tokens" in openai_req:
         anthropic_req["max_tokens"] = openai_req["max_tokens"]
+    else:
+        anthropic_req["max_tokens"] = 4096
 
     # temperature: pass through
     if "temperature" in openai_req:
@@ -652,15 +657,13 @@ def reverse_convert_response(anthropic_resp: dict) -> dict:
     """Convert Anthropic Messages response to OpenAI Chat Completions format.
 
     Args:
-        anthropic_resp: Anthropic API response dictionary
+        anthropic_resp: Anthropic API response dictionary (content at top level)
 
     Returns:
         OpenAI-compatible response dictionary
     """
-    message = anthropic_resp.get("message", {})
-    content = message.get("content", [])
+    content = anthropic_resp.get("content", [])
 
-    # Extract text
     text_parts = []
     tool_calls = []
     reasoning = None
@@ -683,9 +686,8 @@ def reverse_convert_response(anthropic_resp: dict) -> dict:
             })
 
     text_content = "\n".join(text_parts) if text_parts else None
-    finish_reason_map = {v: k for k, v in FINISH_REASON_MAP.items()}
-    stop_reason = message.get("stop_reason", "stop")
-    finish_reason = finish_reason_map.get(stop_reason, "stop")
+    stop_reason = anthropic_resp.get("stop_reason", "stop")
+    finish_reason = REVERSE_FINISH_REASON_MAP.get(stop_reason, "stop")
 
     result: dict[str, Any] = {
         "id": anthropic_resp.get("id", generate_msg_id()),

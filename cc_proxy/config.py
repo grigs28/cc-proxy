@@ -1,4 +1,5 @@
 """配置管理模块 - .env (YAML) 配置文件 + 环境变量支持"""
+import hashlib
 import logging
 import os
 import re
@@ -21,7 +22,27 @@ _ENV_VAR_PATTERN = re.compile(r'\$\{([^:}]+)(?::-([^}]*))?\}')
 def is_default_password() -> bool:
     """检查是否使用默认密码"""
     pw = _config.get("admin_password", "admin")
-    return pw == "admin"
+    return pw == "admin" or pw == _hash_password("admin")
+
+
+def _hash_password(password: str) -> str:
+    """SHA-256 哈希密码"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+_HEX_CHARS = set("0123456789abcdef")
+
+
+def _is_hashed(password: str) -> bool:
+    """检查密码是否已哈希（SHA-256 产生 64 位 hex）"""
+    return len(password) == 64 and all(c in _HEX_CHARS for c in password)
+
+
+def verify_password(plain: str, stored: str) -> bool:
+    """验证密码（兼容明文和哈希存储）"""
+    if _is_hashed(stored):
+        return _hash_password(plain) == stored
+    return plain == stored
 
 
 def _substitute_env_vars(value: Any) -> Any:
@@ -33,7 +54,7 @@ def _substitute_env_vars(value: Any) -> Any:
             return os.environ.get(env_var, default)
         return _ENV_VAR_PATTERN.sub(replace_env_var, value)
     elif isinstance(value, dict):
-        return {_substitute_env_vars(k): _substitute_env_vars(v) for k, v in value.items()}
+        return {k: _substitute_env_vars(v) for k, v in value.items()}
     elif isinstance(value, list):
         return [_substitute_env_vars(item) for item in value]
     return value
@@ -107,7 +128,7 @@ def save_config(config: dict[str, Any], path: str | None = None) -> None:
     with _config_lock:
         with open(save_path, "w", encoding="utf-8") as f:
             yaml.dump(config_to_save, f, allow_unicode=True, sort_keys=False)
-        _config = config
+        _config = config_to_save
         logger.info(f"配置已保存: {save_path}")
 
 
@@ -165,13 +186,14 @@ def get_model_map() -> dict[str, str]:
 
 def get_provider_for_model_legacy(model_id: str) -> dict[str, Any] | None:
     """兼容旧的单 upstream 模式"""
-    model_map = get_model_map()
+    cfg = get_config()
+    model_map = cfg.get("model_map", {})
     mapped_model = model_map.get(model_id, model_id)
-    for provider in get_providers():
+    providers = cfg.get("providers", [])
+    for provider in providers:
         for model in provider.get("models", []):
             if model["id"] == mapped_model:
                 return provider
-    providers = get_providers()
     if providers:
         return providers[0]
     return None

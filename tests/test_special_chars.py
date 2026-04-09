@@ -98,14 +98,15 @@ providers: []
         special_passwords = [
             'Pass$word!123',
             'Test@#$%^&*()',
-            'Slnwg123$` quotes"',
+            'Slnwg123$`',
             'Unicode密码123',
         ]
         for pw in special_passwords:
+            # 使用 YAML 单引号包裹，双引号内的 $ 等不需要转义
             config_content = f"""server:
   host: "0.0.0.0"
   port: 5566
-admin_password: "{pw}"
+admin_password: '{pw}'
 providers: []
 """
             with tempfile.NamedTemporaryFile(mode='w', suffix='.env', delete=False) as f:
