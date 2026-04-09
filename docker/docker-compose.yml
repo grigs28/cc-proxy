@@ -1,36 +1,20 @@
-version: "3"
 services:
-  cc-proxy-anthropic:
+  cc-proxy:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
       - "5566:5566"
+      - "5567:5566"
     environment:
-      - CC_MODE=anthropic
       - CC_PORT=5566
+      - CC_LOG_DIR=/app/log
       - TZ=Asia/Shanghai
     volumes:
       - ../.env:/app/.env
-      - /etc/localtime:/etc/localtime:ro
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-  cc-proxy-openai:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    ports:
-      - "5567:5567"
-    environment:
-      - CC_MODE=openai
-      - CC_PORT=5567
-      - TZ=Asia/Shanghai
-    volumes:
-      - ../.env:/app/.env
+      - ../cc_proxy:/app/cc_proxy
+      - ../main.py:/app/main.py
+      - ../log:/app/log
       - /etc/localtime:/etc/localtime:ro
     restart: unless-stopped
     logging:

@@ -13,6 +13,7 @@ from typing import Any, AsyncGenerator
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from cc_proxy.config import get_config, get_model_map, get_server_config, init_config, is_default_password, reload_config, save_config, verify_password, _hash_password
 from cc_proxy.converter import (
@@ -51,7 +52,6 @@ _admin_tokens: dict[str, float] = {}  # token -> 创建时间戳
 _TOKEN_TTL: int = 1800  # 30 分钟过期
 _password_change_required: bool = True  # 首次启动强制改密码标志
 _registry = None
-_proxy_mode: str = "anthropic"  # "anthropic" 或 "openai"
 _proxy_port: int = 5566  # 实际监听端口
 
 
@@ -150,7 +150,12 @@ def _model_supported_formats(model_id: str) -> list[str]:
 # ============================================================
 
 def _anthropic_headers(provider: Provider) -> dict[str, str]:
-    return {"x-api-key": provider.api_key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json"}
+    return {
+        "x-api-key": provider.api_key,
+        "Authorization": f"Bearer {provider.api_key}",
+        "anthropic-version": ANTHROPIC_VERSION,
+        "content-type": "application/json",
+    }
 
 
 async def anthropic_passthrough_streaming(body: dict, provider: Provider) -> StreamingResponse:
@@ -364,6 +369,7 @@ async def openai_to_anthropic_non_streaming(anthropic_req: dict, model: str, pro
 # ============================================================
 
 app = FastAPI(title="cc-proxy", version=VERSION)
+app.mount("/static", StaticFiles(directory=Path(os.path.dirname(__file__)) / "static"), name="static")
 
 
 @app.middleware("http")
@@ -414,12 +420,9 @@ async def get_model(model_id: str):
 async def messages_endpoint(request: Request):
     """Anthropic Messages API 端点
 
-    mode=anthropic 时：
-    - model supported_formats 包含 "anthropic" -> 直通
-    - 否则 -> Anthropic->OpenAI 转换后再发
-
-    mode=openai 时：
-    - 接收 Anthropic 格式，转换为 OpenAI 发送
+    根据 model 的 supported_formats 决定路由：
+    - 包含 "anthropic" -> 直通 Anthropic 上游
+    - 否则 -> 转换为 OpenAI 格式发送
     """
     body = await request.json()
     model = body.get("model", "unknown")
@@ -432,34 +435,22 @@ async def messages_endpoint(request: Request):
                                         "message": f"Model '{model}' not found in any configured provider"}})
 
     supported = _model_supported_formats(model)
-    logger.info(f"-> model={model} provider={provider.name} supported_formats={supported} mode={_proxy_mode} stream={is_stream}")
+    logger.info(f"-> [anthropic] model={model} provider={provider.name} supported={supported} stream={is_stream}")
     await _inc_stats(model, provider.name)
 
     try:
-        if _proxy_mode == "openai":
-            # OpenAI mode: 接收 Anthropic 格式，转换为 OpenAI 发送
+        if "anthropic" in supported:
+            if is_stream:
+                return await anthropic_passthrough_streaming(body, provider)
+            else:
+                return await anthropic_passthrough_non_streaming(body, provider)
+        else:
             model_map = get_model_map()
             openai_req = convert_request(body, model_map=model_map)
             if is_stream:
                 return await openai_streaming(openai_req, model, provider)
             else:
                 return await openai_non_streaming(openai_req, model, provider)
-        else:
-            # Anthropic mode
-            if "anthropic" in supported:
-                # 直通：原样转发 Anthropic 格式
-                if is_stream:
-                    return await anthropic_passthrough_streaming(body, provider)
-                else:
-                    return await anthropic_passthrough_non_streaming(body, provider)
-            else:
-                # 转换：Anthropic -> OpenAI
-                model_map = get_model_map()
-                openai_req = convert_request(body, model_map=model_map)
-                if is_stream:
-                    return await openai_streaming(openai_req, model, provider)
-                else:
-                    return await openai_non_streaming(openai_req, model, provider)
     except httpx.ConnectError:
         return JSONResponse(status_code=529, content={
             "type": "error", "error": {"type": "overloaded_error",
@@ -474,12 +465,9 @@ async def messages_endpoint(request: Request):
 async def chat_completions_endpoint(request: Request):
     """OpenAI Chat Completions API 端点
 
-    mode=openai 时：
-    - model supported_formats 包含 "openai" -> 直通
-    - 否则 -> OpenAI->Anthropic 转换后再发
-
-    mode=anthropic 时：
-    - 接收 OpenAI 格式，转换为 Anthropic 发送
+    根据 model 的 supported_formats 决定路由：
+    - 包含 "openai" -> 直通 OpenAI 上游
+    - 否则 -> 转换为 Anthropic 格式发送
     """
     body = await request.json()
     model = body.get("model", "unknown")
@@ -495,51 +483,39 @@ async def chat_completions_endpoint(request: Request):
             }})
 
     supported = _model_supported_formats(model)
-    logger.info(f"-> [openai] model={model} provider={provider.name} supported_formats={supported} mode={_proxy_mode} stream={is_stream}")
+    logger.info(f"-> [openai] model={model} provider={provider.name} supported={supported} stream={is_stream}")
     await _inc_stats(model, provider.name)
 
     try:
-        if _proxy_mode == "anthropic":
-            # Anthropic mode: 接收 OpenAI 格式，转换为 Anthropic 发送
+        if "openai" in supported:
+            base_url = provider.get_base_url("openai")
+            raw_url = f"{base_url.rstrip('/')}/v1/chat/completions"
+            url = _dedupe_base_url_path(base_url, raw_url)
+            hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
+            if is_stream:
+                return StreamingResponse(
+                    _stream_openai(url, hdrs, body, provider),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+                )
+            else:
+                for attempt in range(MAX_RETRIES):
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
+                        resp = await client.post(url, json=body, headers=hdrs)
+                        if resp.status_code != 200:
+                            logger.warning(f"<- openai {resp.status_code} (attempt {attempt+1}): {resp.text[:300]}")
+                            if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                                await asyncio.sleep(attempt + 1)
+                                continue
+                            return JSONResponse(status_code=resp.status_code, content=resp.json())
+                        return JSONResponse(content=resp.json())
+        else:
             model_map = get_model_map()
             anthropic_req = reverse_convert_request(body, model_map=model_map)
             if is_stream:
                 return await openai_to_anthropic_streaming(anthropic_req, model, provider)
             else:
                 return await openai_to_anthropic_non_streaming(anthropic_req, model, provider)
-        else:
-            # OpenAI mode
-            if "openai" in supported:
-                # 直通：直接 POST 到 /v1/chat/completions
-                base_url = provider.get_base_url("openai")
-                raw_url = f"{base_url.rstrip('/')}/v1/chat/completions"
-                url = _dedupe_base_url_path(base_url, raw_url)
-                hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
-                if is_stream:
-                    return StreamingResponse(
-                        _stream_openai(url, hdrs, body, provider),
-                        media_type="text/event-stream",
-                        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
-                    )
-                else:
-                    for attempt in range(MAX_RETRIES):
-                        async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
-                            resp = await client.post(url, json=body, headers=hdrs)
-                            if resp.status_code != 200:
-                                logger.warning(f"<- openai {resp.status_code} (attempt {attempt+1}): {resp.text[:300]}")
-                                if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
-                                    await asyncio.sleep(attempt + 1)
-                                    continue
-                                return JSONResponse(status_code=resp.status_code, content=resp.json())
-                            return JSONResponse(content=resp.json())
-            else:
-                # 转换：OpenAI -> Anthropic
-                model_map = get_model_map()
-                anthropic_req = reverse_convert_request(body, model_map=model_map)
-                if is_stream:
-                    return await openai_to_anthropic_streaming(anthropic_req, model, provider)
-                else:
-                    return await openai_to_anthropic_non_streaming(anthropic_req, model, provider)
     except httpx.ConnectError:
         return JSONResponse(status_code=529, content={
             "error": {
@@ -907,7 +883,11 @@ async def admin_reload():
 
 
 async def _test_connectivity(base_url: str, api_key: str, fmt: str) -> dict:
-    """测试一个端点的连通性，同时尝试 GET 和 POST"""
+    """测试端点连通性
+
+    使用与实际代理相同的 URL 构建逻辑（含去重），先 POST 后 GET。
+    只要端点可达（200/401/403/404/429/529）即视为成功。
+    """
     t0 = time.time()
     success = False
     latency = 0
@@ -916,33 +896,37 @@ async def _test_connectivity(base_url: str, api_key: str, fmt: str) -> dict:
 
     if fmt == "openai":
         hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        endpoints = {
-            "GET": f"{base_url.rstrip('/')}/v1/models",
-            "POST": f"{base_url.rstrip('/')}/v1/chat/completions",
-        }
+        raw_post = f"{base_url.rstrip('/')}/v1/chat/completions"
+        raw_get = f"{base_url.rstrip('/')}/v1/models"
     else:
         hdrs = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json"}
-        endpoints = {
-            "GET": f"{base_url.rstrip('/')}/v1/models",
-            "POST": f"{base_url.rstrip('/')}/v1/messages",
-        }
+        raw_post = f"{base_url.rstrip('/')}/v1/messages"
+        raw_get = f"{base_url.rstrip('/')}/v1/models"
+
+    # 用与实际代理相同的去重逻辑
+    post_url = _dedupe_base_url_path(base_url, raw_post)
+    get_url = _dedupe_base_url_path(base_url, raw_get)
 
     post_body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
 
     async with httpx.AsyncClient(timeout=10.0) as client:
-        for method in ["GET", "POST"]:
+        for method, url in [("POST", post_url), ("GET", get_url)]:
             try:
-                url = endpoints[method]
                 if method == "GET":
                     resp = await client.get(url, headers=hdrs)
                 else:
                     resp = await client.post(url, json=post_body, headers=hdrs)
                 latency = int((time.time() - t0) * 1000)
-                if resp.status_code in (200, 401, 529):
+                # 端点可达就算成功（不需要模型实际响应）
+                if resp.status_code in (200, 401, 403, 429, 529):
                     success = True
                     method_used = method
                     if resp.status_code == 401:
                         error = "key无效"
+                    elif resp.status_code == 403:
+                        error = "权限不足"
+                    elif resp.status_code == 429:
+                        error = "请求过频"
                     elif resp.status_code == 529:
                         error = "服务过载"
                     break
@@ -975,9 +959,9 @@ async def admin_test_provider(name: str):
         if anthropic_url:
             results["anthropic"] = await _test_connectivity(anthropic_url, p.api_key, "anthropic")
 
-    # 汇总结果
-    all_success = all(r["success"] for r in results.values())
-    return {"success": all_success, "results": results}
+    # 只要有一种格式可用就算成功
+    any_success = any(r["success"] for r in results.values())
+    return {"success": any_success, "results": results}
 
 
 @app.get("/api/stats")
@@ -992,24 +976,21 @@ async def catch_all(request: Request, path: str):
         "type": "error", "error": {"type": "not_found_error", "message": f"Endpoint /{path} not found"}})
 
 
-def create_app(config_path: str = ".env", mode: str = "anthropic", port: int = None) -> FastAPI:
+def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
     """创建 FastAPI 应用
+
+    单端口同时支持 Anthropic (/v1/messages) 和 OpenAI (/v1/chat/completions) 格式。
 
     Args:
         config_path: 配置文件路径
-        mode: 运行模式，"anthropic" 或 "openai"
-            - anthropic: 端口 5566，接收 Claude Code 的 Anthropic 格式请求
-            - openai: 端口 5567，接收其他客户端的 OpenAI 格式请求
         port: 实际监听端口
     """
-    global _config_path, _proxy_mode, _proxy_port, _password_change_required
+    global _config_path, _proxy_port, _password_change_required
     _config_path = config_path
-    _proxy_mode = mode
     if port is not None:
         _proxy_port = port
     init_config(config_path)
     _get_registry().reload()
-    # 如果密码不是默认密码，说明已经修改过
     if not _is_default_password():
         _password_change_required = False
     return app

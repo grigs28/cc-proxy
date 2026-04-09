@@ -76,6 +76,7 @@ Thumbs.db
 # Logs
 *.log
 logs/
+log/
 
 # Database
 *.db
