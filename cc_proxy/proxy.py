@@ -169,9 +169,10 @@ async def anthropic_passthrough_streaming(body: dict, provider: Provider) -> Str
             async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
                 async with client.stream("POST", url, json=body, headers=_anthropic_headers(provider)) as resp:
                     if resp.status_code != 200:
-                        err = ""
+                        chunks = []
                         async for chunk in resp.aiter_text():
-                            err += chunk
+                            chunks.append(chunk)
+                        err = "".join(chunks)
                         logger.warning(f"<- anthropic stream {resp.status_code} (attempt {attempt+1}): {err[:300]}")
                         if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
                             await asyncio.sleep(attempt + 1)
@@ -227,9 +228,10 @@ async def openai_streaming(openai_req: dict, model: str, provider: Provider) -> 
                 hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
                 async with client.stream("POST", url, json=openai_req, headers=hdrs) as resp:
                     if resp.status_code != 200:
-                        err = ""
+                        chunks = []
                         async for c in resp.aiter_text():
-                            err += c
+                            chunks.append(c)
+                        err = "".join(chunks)
                         if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
                             await asyncio.sleep(attempt + 1)
                             continue
@@ -538,9 +540,10 @@ async def _stream_openai(url: str, hdrs: dict, body: dict, provider: Provider) -
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
             async with client.stream("POST", url, json=body, headers=hdrs) as resp:
                 if resp.status_code != 200:
-                    err = ""
+                    chunks = []
                     async for chunk in resp.aiter_text():
-                        err += chunk
+                        chunks.append(chunk)
+                    err = "".join(chunks)
                     logger.warning(f"<- openai stream {resp.status_code} (attempt {attempt+1}): {err[:300]}")
                     if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
                         await asyncio.sleep(attempt + 1)
@@ -568,9 +571,10 @@ async def admin_page():
 
 async def _serve_admin():
     p = Path(os.path.dirname(__file__)) / "static" / "index.html"
-    if not p.exists():
+    try:
+        content = p.read_bytes()
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail="index.html not found")
-    content = p.read_bytes()
     return HTMLResponse(content=content, headers={"Content-Length": str(len(content))})
 
 
@@ -806,25 +810,24 @@ async def admin_get_provider_upstream_models(name: str):
     all_models = []
     errors = []
 
-    # 尝试 OpenAI endpoint
+    fetch_tasks = {}
     if p.supports_format("openai"):
         openai_url = p.get_base_url("openai")
         if openai_url:
-            success, models, err = await _fetch_models_from_endpoint(openai_url, p.api_key, "openai")
-            if success:
-                all_models.extend(models)
-            else:
-                errors.append(f"OpenAI: {err}")
-
-    # 尝试 Anthropic endpoint
+            fetch_tasks["openai"] = _fetch_models_from_endpoint(openai_url, p.api_key, "openai")
     if p.supports_format("anthropic"):
         anthropic_url = p.get_base_url("anthropic")
         if anthropic_url:
-            success, models, err = await _fetch_models_from_endpoint(anthropic_url, p.api_key, "anthropic")
+            fetch_tasks["anthropic"] = _fetch_models_from_endpoint(anthropic_url, p.api_key, "anthropic")
+
+    if fetch_tasks:
+        keys = list(fetch_tasks.keys())
+        results = await asyncio.gather(*fetch_tasks.values())
+        for fmt, (success, models, err) in zip(keys, results):
             if success:
                 all_models.extend(models)
             else:
-                errors.append(f"Anthropic: {err}")
+                errors.append(f"{fmt.title()}: {err}")
 
     if not all_models and errors:
         raise HTTPException(status_code=502, detail="获取模型失败: " + "; ".join(errors))
@@ -947,19 +950,22 @@ async def admin_test_provider(name: str):
 
     results = {}
 
-    # 测试 OpenAI endpoint
+    tasks = {}
     if p.supports_format("openai"):
         openai_url = p.get_base_url("openai")
         if openai_url:
-            results["openai"] = await _test_connectivity(openai_url, p.api_key, "openai")
-
-    # 测试 Anthropic endpoint
+            tasks["openai"] = _test_connectivity(openai_url, p.api_key, "openai")
     if p.supports_format("anthropic"):
         anthropic_url = p.get_base_url("anthropic")
         if anthropic_url:
-            results["anthropic"] = await _test_connectivity(anthropic_url, p.api_key, "anthropic")
+            tasks["anthropic"] = _test_connectivity(anthropic_url, p.api_key, "anthropic")
 
-    # 只要有一种格式可用就算成功
+    if tasks:
+        keys = list(tasks.keys())
+        values = await asyncio.gather(*tasks.values())
+        for k, v in zip(keys, values):
+            results[k] = v
+
     any_success = any(r["success"] for r in results.values())
     return {"success": any_success, "results": results}
 
