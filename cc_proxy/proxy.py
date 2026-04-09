@@ -13,7 +13,7 @@ from typing import Any, AsyncGenerator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from cc_proxy.config import get_config, get_model_map, get_server_config, init_config, is_default_password, reload_config, save_config
 from cc_proxy.converter import (
@@ -586,7 +586,9 @@ async def _serve_admin():
     p = Path(os.path.dirname(__file__)) / "static" / "index.html"
     if not p.exists():
         raise HTTPException(status_code=404, detail="index.html not found")
-    return HTMLResponse(content=p.read_text(encoding="utf-8"))
+    content = p.read_bytes()
+    from starlette.responses import Response
+    return Response(content=content, media_type="text/html", headers={"Content-Length": str(len(content))})
 
 
 @app.post("/api/auth")
@@ -881,6 +883,27 @@ async def admin_delete_model(name: str, model_id: str):
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
     r._persist()
     return {"success": True}
+
+
+@app.put("/api/providers/{name}/models/{model_id}")
+async def admin_update_model(name: str, model_id: str, request: Request):
+    """更新模型配置"""
+    r = _get_registry()
+    p = r.get_provider(name)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+
+    data = await request.json()
+
+    # 查找并更新模型
+    for m in p.models:
+        if m.id == model_id:
+            m.display_name = data.get("display_name", m.display_name)
+            m.supported_formats = data.get("supported_formats", m.supported_formats)
+            r._persist()
+            return {"id": m.id, "display_name": m.display_name, "supported_formats": m.supported_formats}
+
+    raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
 
 
 @app.post("/api/config/reload")

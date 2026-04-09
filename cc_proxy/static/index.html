@@ -899,36 +899,12 @@
 
             <!-- 模型列表 -->
             <div id="models-tab" class="tab-content">
-                <!-- 添加模型卡片 -->
-                <div class="card" style="margin-bottom: 1.5rem">
-                    <div class="card-header">
-                        <h2>添加模型</h2>
-                    </div>
-                    <div class="card-body">
-                        <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;padding:1rem">
-                            <select id="add-model-provider" style="width:140px" onchange="onProviderChangeForAdd()">
-                                <option value="">选择提供商</option>
-                            </select>
-                            <button class="btn btn-primary btn-sm" id="btn-fetch-models" onclick="fetchProviderModels()" style="white-space:nowrap">获取模型</button>
-                            <select id="add-model-select" style="width:160px" onchange="onFetchedModelSelect()">
-                                <option value="">— 从列表选择 —</option>
-                            </select>
-                            <input type="text" id="add-model-id" placeholder="模型 ID" style="width:140px">
-                            <input type="text" id="add-model-display" placeholder="显示名称" style="width:130px">
-                            <div style="display:flex;gap:0.5rem;align-items:center">
-                                <label title="OpenAI"><input type="checkbox" id="add-model-openai" value="openai" checked> O</label>
-                                <label title="Anthropic"><input type="checkbox" id="add-model-anthropic" value="anthropic" checked> A</label>
-                            </div>
-                            <button class="btn btn-primary btn-sm" onclick="addModelFromList()">添加</button>
-                        </div>
-                    </div>
-                </div>
-
                 <div class="card">
                     <div class="card-header">
                         <h2>所有模型</h2>
                         <div style="display:flex;gap:0.5rem">
-                            <button class="btn btn-primary btn-sm" onclick="testSelectedModels()">测试已选</button>
+                            <button class="btn btn-primary btn-sm" onclick="openAddModelModal()">添加模型</button>
+                            <button class="btn btn-secondary btn-sm" onclick="testSelectedModels()">测试已选</button>
                             <button class="btn btn-danger btn-sm" onclick="deleteSelectedModels()">删除已选</button>
                         </div>
                     </div>
@@ -997,6 +973,55 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeProviderModal()">取消</button>
                 <button class="btn btn-primary" onclick="saveProvider()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加模型模态框 -->
+    <div id="add-model-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="add-model-modal-title">添加模型</h3>
+                <button class="modal-close" onclick="closeAddModelModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="modal-add-model-editing-provider" value="">
+                <input type="hidden" id="modal-add-model-editing-id" value="">
+                <div class="form-group">
+                    <label>选择提供商</label>
+                    <select id="modal-add-model-provider" onchange="onAddModelProviderChange()" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                        <option value="">-- 请选择提供商 --</option>
+                    </select>
+                </div>
+                <div class="form-group" id="modal-add-model-fetch-group" style="display:none">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="fetchModelsForAdd()">获取模型</button>
+                    <small id="modal-add-model-fetch-status" style="color:var(--text-secondary);margin-left:0.5rem"></small>
+                </div>
+                <div class="form-group" id="modal-add-model-select-group" style="display:none">
+                    <label>从列表选择 (按住 Ctrl/Cmd 可多选)</label>
+                    <select id="modal-add-model-upstream-select" multiple onchange="onUpstreamModelSelect()" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary);min-height:120px">
+                        <option value="">-- 手动输入 --</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>模型 ID</label>
+                    <input type="text" id="modal-add-model-id" placeholder="模型唯一标识 (如: gpt-4o)" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                </div>
+                <div class="form-group">
+                    <label>显示名称</label>
+                    <input type="text" id="modal-add-model-display" placeholder="模型显示名称" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                </div>
+                <div class="form-group">
+                    <label>支持格式</label>
+                    <div style="display:flex;gap:1rem">
+                        <label><input type="checkbox" id="modal-add-model-fmt-openai" value="openai" checked style="width:18px;height:18px"> OpenAI</label>
+                        <label><input type="checkbox" id="modal-add-model-fmt-anthropic" value="anthropic" checked style="width:18px;height:18px"> Anthropic</label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeAddModelModal()">取消</button>
+                <button id="add-model-modal-submit-btn" class="btn btn-primary" onclick="submitAddModel()">添加</button>
             </div>
         </div>
     </div>
@@ -1194,7 +1219,7 @@
                 document.getElementById(tab.dataset.tab + '-tab').classList.add('active');
 
                 if (tab.dataset.tab === 'providers') loadProviders();
-                if (tab.dataset.tab === 'models') { loadModels(); loadProviderOptions(); }
+                if (tab.dataset.tab === 'models') { loadModels(); }
                 if (tab.dataset.tab === 'dashboard') loadDashboard();
             });
         });
@@ -1499,7 +1524,7 @@
                             '<td><span class="badge badge-primary">' + escapeHtml(m.provider_name) + '</span></td>' +
                             '<td><span class="badge" style="background:' + typeColor + '">' + typeLabel + '</span></td>' +
                             '<td><span class="status-indicator" id="model-status-' + safeId.replace(/[^a-zA-Z0-9]/g, '_') + '"><span class="status-dot" style="background:var(--text-secondary)"></span></span></td>' +
-                            '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button> <button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + safeName + '\',\'' + safeId + '\')">删除</button></td>';
+                            '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button> <button class="btn btn-secondary btn-sm" onclick="editModel(\'' + safeName + '\',\'' + safeId + '\',\'' + escapeAttr(m.display_name || m.id) + '\',\'' + fmts.join(',') + '\')">编辑</button> <button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + safeName + '\',\'' + safeId + '\')">删除</button></td>';
                         tbody.appendChild(tr);
                     });
                 })
@@ -1651,98 +1676,6 @@
             .catch(function(err) { showToast(err.message, 'error'); });
         }
 
-        function loadProviderOptions() {
-            api('/providers')
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    var sel = document.getElementById('add-model-provider');
-                    sel.innerHTML = '<option value="">选择提供商</option>';
-                    (data.providers || []).forEach(function(p) {
-                        var opt = document.createElement('option');
-                        opt.value = p.name;
-                        opt.textContent = p.name;
-                        sel.appendChild(opt);
-                    });
-                })
-                .catch(function(err) { console.error('加载提供商失败', err); });
-        }
-
-        function onProviderChangeForAdd() {
-            // 切换提供商时清空模型下拉
-            var sel = document.getElementById('add-model-select');
-            sel.innerHTML = '<option value="">— 从列表选择 —</option>';
-        }
-
-        function fetchProviderModels() {
-            var providerName = document.getElementById('add-model-provider').value;
-            if (!providerName) { showToast('请先选择提供商', 'error'); return; }
-            var sel = document.getElementById('add-model-select');
-            sel.innerHTML = '<option value="">加载中...</option>';
-            api('/providers/' + encodeURIComponent(providerName) + '/models')
-                .then(function(r) {
-                    if (!r.ok) throw new Error('获取失败');
-                    return r.json();
-                })
-                .then(function(data) {
-                    var models = data.models || [];
-                    sel.innerHTML = '<option value="">— 从列表选择 —</option>';
-                    if (models.length === 0) {
-                        var opt = document.createElement('option');
-                        opt.value = '';
-                        opt.textContent = '（无模型）';
-                        sel.appendChild(opt);
-                        return;
-                    }
-                    models.forEach(function(m) {
-                        var opt = document.createElement('option');
-                        opt.value = JSON.stringify({ id: m.id, display_name: m.display_name || m.id });
-                        opt.textContent = m.display_name || m.id + ' (' + m.id + ')';
-                        sel.appendChild(opt);
-                    });
-                })
-                .catch(function(err) {
-                    sel.innerHTML = '<option value="">— 从列表选择 —</option>';
-                    showToast('获取模型列表失败: ' + err.message, 'error');
-                });
-        }
-
-        function onFetchedModelSelect() {
-            var sel = document.getElementById('add-model-select');
-            var val = sel.value;
-            if (!val) return;
-            var m = JSON.parse(val);
-            document.getElementById('add-model-id').value = m.id;
-            document.getElementById('add-model-display').value = m.display_name || m.id;
-        }
-
-        function addModelFromList() {
-            var providerName = document.getElementById('add-model-provider').value;
-            var modelId = document.getElementById('add-model-id').value.trim();
-            var displayName = document.getElementById('add-model-display').value.trim() || modelId;
-            if (!providerName) { showToast('请选择提供商', 'error'); return; }
-            if (!modelId) { showToast('请输入模型 ID', 'error'); return; }
-            var fmts = [];
-            if (document.getElementById('add-model-openai').checked) fmts.push('openai');
-            if (document.getElementById('add-model-anthropic').checked) fmts.push('anthropic');
-            if (fmts.length === 0) { showToast('请至少选择一种格式', 'error'); return; }
-            api('/providers/' + encodeURIComponent(providerName) + '/models', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: modelId, display_name: displayName, supported_formats: fmts })
-            })
-            .then(function(r) {
-                if (r.ok) return r.json();
-                return r.json().then(function(e) { throw new Error(e.detail || '添加失败'); });
-            })
-            .then(function() {
-                showToast('模型 "' + modelId + '" 已添加');
-                document.getElementById('add-model-id').value = '';
-                document.getElementById('add-model-display').value = '';
-                loadModels();
-            })
-            .catch(function(err) { showToast(err.message, 'error'); });
-        }
-
         function removeModel(providerName, modelId) {
             if (!confirm('确定删除模型 "' + modelId + '" 吗？')) return;
             api('/providers/' + encodeURIComponent(providerName) + '/models/' + encodeURIComponent(modelId), { method: 'DELETE' })
@@ -1753,6 +1686,261 @@
                     } else {
                         return r.json().then(function(e) { throw new Error(e.detail || '删除失败'); });
                     }
+                })
+                .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
+        // --- 添加模型模态框功能 ---
+
+        function openAddModelModal() {
+            document.getElementById('add-model-modal').classList.add('active');
+            resetAddModelModal();
+            loadAddModelProviderOptions();
+        }
+
+        function openEditModelModal(providerName, modelId, displayName, fmts) {
+            document.getElementById('add-model-modal').classList.add('active');
+            resetAddModelModal();
+
+            // 设置为编辑模式
+            document.getElementById('add-model-modal-title').textContent = '编辑模型';
+            document.getElementById('add-model-modal-submit-btn').textContent = '保存';
+            document.getElementById('modal-add-model-editing-provider').value = providerName;
+            document.getElementById('modal-add-model-editing-id').value = modelId;
+
+            // 加载提供商选项并选中（可修改）
+            loadAddModelProviderOptionsForEdit(providerName);
+            document.getElementById('modal-add-model-fetch-group').style.display = 'block';
+
+            // 填充模型信息（可修改）
+            document.getElementById('modal-add-model-id').value = modelId;
+            document.getElementById('modal-add-model-display').value = displayName || modelId;
+
+            // 设置格式
+            document.getElementById('modal-add-model-fmt-openai').checked = fmts.includes('openai');
+            document.getElementById('modal-add-model-fmt-anthropic').checked = fmts.includes('anthropic');
+        }
+
+        function closeAddModelModal() {
+            document.getElementById('add-model-modal').classList.remove('active');
+            document.getElementById('modal-add-model-id').disabled = false;
+        }
+
+        function resetAddModelModal() {
+            document.getElementById('add-model-modal-title').textContent = '添加模型';
+            document.getElementById('add-model-modal-submit-btn').textContent = '添加';
+            document.getElementById('modal-add-model-editing-provider').value = '';
+            document.getElementById('modal-add-model-editing-id').value = '';
+            document.getElementById('modal-add-model-provider').innerHTML = '<option value="">-- 请选择提供商 --</option>';
+            document.getElementById('modal-add-model-provider').disabled = false;
+            document.getElementById('modal-add-model-fetch-group').style.display = 'none';
+            document.getElementById('modal-add-model-select-group').style.display = 'none';
+            document.getElementById('modal-add-model-upstream-select').innerHTML = '<option value="">-- 手动输入 --</option>';
+            document.getElementById('modal-add-model-id').value = '';
+            document.getElementById('modal-add-model-id').disabled = false;
+            document.getElementById('modal-add-model-display').value = '';
+            document.getElementById('modal-add-model-fmt-openai').checked = true;
+            document.getElementById('modal-add-model-fmt-anthropic').checked = true;
+            document.getElementById('modal-add-model-fetch-status').textContent = '';
+        }
+
+        function loadAddModelProviderOptionsForEdit(selectedProvider) {
+            api('/providers')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var sel = document.getElementById('modal-add-model-provider');
+                    sel.innerHTML = '<option value="">-- 请选择提供商 --</option>';
+                    (data.providers || []).forEach(function(p) {
+                        var opt = document.createElement('option');
+                        opt.value = p.name;
+                        opt.textContent = p.name;
+                        if (p.name === selectedProvider) {
+                            opt.selected = true;
+                        }
+                        sel.appendChild(opt);
+                    });
+                })
+                .catch(function(err) { console.error('加载提供商失败', err); });
+        }
+
+        function editModel(providerName, modelId, displayName, fmtsStr) {
+            var fmts = fmtsStr.split(',');
+            openEditModelModal(providerName, modelId, displayName, fmts);
+        }
+
+        function loadAddModelProviderOptions() {
+            api('/providers')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var sel = document.getElementById('modal-add-model-provider');
+                    sel.innerHTML = '<option value="">-- 请选择提供商 --</option>';
+                    (data.providers || []).forEach(function(p) {
+                        var opt = document.createElement('option');
+                        opt.value = p.name;
+                        opt.textContent = p.name;
+                        sel.appendChild(opt);
+                    });
+                })
+                .catch(function(err) { console.error('加载提供商失败', err); });
+        }
+
+        function onAddModelProviderChange() {
+            var providerName = document.getElementById('modal-add-model-provider').value;
+            var fetchGroup = document.getElementById('modal-add-model-fetch-group');
+            var selectGroup = document.getElementById('modal-add-model-select-group');
+
+            if (providerName) {
+                fetchGroup.style.display = 'block';
+            } else {
+                fetchGroup.style.display = 'none';
+                selectGroup.style.display = 'none';
+            }
+            // 重置下游选择
+            selectGroup.style.display = 'none';
+            document.getElementById('modal-add-model-upstream-select').innerHTML = '<option value="">-- 手动输入 --</option>';
+            document.getElementById('modal-add-model-id').value = '';
+            document.getElementById('modal-add-model-display').value = '';
+            document.getElementById('modal-add-model-fetch-status').textContent = '';
+        }
+
+        function fetchModelsForAdd() {
+            var providerName = document.getElementById('modal-add-model-provider').value;
+            if (!providerName) { showToast('请先选择提供商', 'error'); return; }
+
+            var statusEl = document.getElementById('modal-add-model-fetch-status');
+            statusEl.textContent = '获取中...';
+
+            var sel = document.getElementById('modal-add-model-upstream-select');
+            sel.innerHTML = '<option value="">-- 手动输入 --</option>';
+
+            api('/providers/' + encodeURIComponent(providerName) + '/models')
+                .then(function(r) {
+                    if (!r.ok) throw new Error('获取失败');
+                    return r.json();
+                })
+                .then(function(data) {
+                    var models = data.models || [];
+                    if (models.length === 0) {
+                        statusEl.textContent = '无可用模型';
+                        document.getElementById('modal-add-model-select-group').style.display = 'none';
+                        return;
+                    }
+                    models.forEach(function(m) {
+                        var opt = document.createElement('option');
+                        opt.value = JSON.stringify({ id: m.id, display_name: m.display_name || m.id });
+                        opt.textContent = (m.display_name || m.id) + ' (' + m.id + ')';
+                        sel.appendChild(opt);
+                    });
+                    statusEl.textContent = '获取成功 (' + models.length + ' 个)';
+                    document.getElementById('modal-add-model-select-group').style.display = 'block';
+                })
+                .catch(function(err) {
+                    statusEl.textContent = '获取失败';
+                    showToast('获取模型列表失败: ' + err.message, 'error');
+                });
+        }
+
+        function onUpstreamModelSelect() {
+            var sel = document.getElementById('modal-add-model-upstream-select');
+            var selectedOptions = Array.from(sel.selectedOptions).filter(function(opt) { return opt.value; });
+
+            if (selectedOptions.length === 0) {
+                document.getElementById('modal-add-model-id').value = '';
+                document.getElementById('modal-add-model-display').value = '';
+                return;
+            }
+
+            if (selectedOptions.length === 1) {
+                // 单选：直接填充到输入框
+                var m = JSON.parse(selectedOptions[0].value);
+                document.getElementById('modal-add-model-id').value = m.id;
+                document.getElementById('modal-add-model-display').value = m.display_name || m.id;
+            } else {
+                // 多选：显示已选数量
+                var ids = selectedOptions.map(function(opt) { var m = JSON.parse(opt.value); return m.id; });
+                document.getElementById('modal-add-model-id').value = ids.join(', ');
+                document.getElementById('modal-add-model-display').value = '';
+            }
+        }
+
+        function submitAddModel() {
+            var providerName = document.getElementById('modal-add-model-provider').value;
+            var modelIdInput = document.getElementById('modal-add-model-id').value.trim();
+            var displayName = document.getElementById('modal-add-model-display').value.trim();
+            var editingProvider = document.getElementById('modal-add-model-editing-provider').value;
+            var editingId = document.getElementById('modal-add-model-editing-id').value;
+            var isEdit = !!editingId;
+
+            if (!providerName) { showToast('请选择提供商', 'error'); return; }
+            if (!modelIdInput) { showToast('请输入模型 ID', 'error'); return; }
+
+            var fmts = [];
+            if (document.getElementById('modal-add-model-fmt-openai').checked) fmts.push('openai');
+            if (document.getElementById('modal-add-model-fmt-anthropic').checked) fmts.push('anthropic');
+            if (fmts.length === 0) { showToast('请至少选择一种格式', 'error'); return; }
+
+            var modelIds = modelIdInput.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
+            if (modelIds.length === 0) { showToast('请输入有效的模型 ID', 'error'); return; }
+
+            // 先获取该提供商已有模型列表，检查重复
+            api('/providers/' + encodeURIComponent(providerName))
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var existingIds = (data.models || []).map(function(m) { return m.id; });
+                    // 编辑模式下，排除当前编辑的模型自身
+                    var checkIds = existingIds.filter(function(id) { return !isEdit || id !== editingId; });
+
+                    // 找出已存在和新增的
+                    var duplicates = modelIds.filter(function(mid) { return checkIds.includes(mid); });
+                    var newIds = modelIds.filter(function(mid) { return !checkIds.includes(mid); });
+
+                    if (duplicates.length > 0) {
+                        showToast('模型已存在，跳过: ' + duplicates.join(', '), 'warning');
+                    }
+
+                    if (newIds.length === 0) {
+                        if (isEdit && modelIds.length === 1 && modelIds[0] === editingId) {
+                            // 编辑自身但没有改动，不需要操作
+                            showToast('未做任何修改', 'warning');
+                        }
+                        return;
+                    }
+
+                    if (isEdit) {
+                        // 编辑模式：先删除原始模型，再添加新模型
+                        api('/providers/' + encodeURIComponent(editingProvider) + '/models/' + encodeURIComponent(editingId), { method: 'DELETE' })
+                            .then(function() {}, function() {})
+                            .then(function() {
+                                return doAddModels(providerName, newIds, displayName, fmts, modelIds);
+                            });
+                    } else {
+                        // 添加模式
+                        doAddModels(providerName, newIds, displayName, fmts, modelIds);
+                    }
+                })
+                .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
+        function doAddModels(providerName, modelIds, displayName, fmts, allIds) {
+            var promises = modelIds.map(function(mid) {
+                var dname = modelIds.length === 1 && displayName ? displayName : mid;
+                return api('/providers/' + encodeURIComponent(providerName) + '/models', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: mid, display_name: dname, supported_formats: fmts })
+                });
+            });
+
+            Promise.all(promises)
+                .then(function(results) {
+                    var successCount = results.filter(function(r) { return r.ok; }).length;
+                    if (successCount === modelIds.length) {
+                        showToast('已添加 ' + successCount + ' 个模型');
+                    } else {
+                        showToast('添加完成: ' + successCount + '/' + modelIds.length + ' 成功', 'warning');
+                    }
+                    closeAddModelModal();
+                    loadModels();
                 })
                 .catch(function(err) { showToast(err.message, 'error'); });
         }
