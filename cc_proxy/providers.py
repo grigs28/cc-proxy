@@ -14,6 +14,10 @@ class Model:
     id: str
     display_name: str
     supported_formats: list[str] = field(default_factory=lambda: ["openai", "anthropic"])
+    # Anthropic 认证方式: "auto"(两种都发), "bearer"(仅 Authorization), "x-api-key"(仅 x-api-key)
+    auth_style: str = "auto"
+    # 过滤非核心字段 (thinking, metadata 等)，避免上游报错
+    strip_fields: bool = False
 
     @staticmethod
     def _from_dict(data: dict[str, Any]) -> "Model":
@@ -22,6 +26,8 @@ class Model:
             id=data["id"],
             display_name=data.get("display_name", data["id"]),
             supported_formats=data.get("supported_formats", ["openai", "anthropic"]),
+            auth_style=data.get("auth_style", "auto"),
+            strip_fields=data.get("strip_fields", False),
         )
 
 
@@ -124,7 +130,7 @@ class Provider:
             "base_url_openai": self.base_url_openai,
             "base_url_anthropic": self.base_url_anthropic,
             "models": [
-                {"id": m.id, "display_name": m.display_name, "supported_formats": m.supported_formats}
+                {"id": m.id, "display_name": m.display_name, "supported_formats": m.supported_formats, "auth_style": m.auth_style, "strip_fields": m.strip_fields}
                 for m in self.models
             ],
         }
@@ -222,6 +228,9 @@ class ProviderRegistry:
                     "id": model.id,
                     "display_name": model.display_name,
                     "provider_name": provider.name,
+                    "supported_formats": model.supported_formats,
+                    "auth_style": model.auth_style,
+                    "strip_fields": model.strip_fields,
                 })
         return models
 

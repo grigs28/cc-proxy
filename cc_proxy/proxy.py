@@ -145,29 +145,72 @@ def _model_supported_formats(model_id: str) -> list[str]:
     return []
 
 
+def _model_auth_style(model_id: str) -> str:
+    """获取模型的 auth_style，不存在则返回 'auto'"""
+    provider = _get_registry().get_provider_for_model(model_id)
+    if not provider:
+        return "auto"
+    for m in provider.models:
+        if m.id == model_id:
+            return m.auth_style
+    return "auto"
+
+
+def _model_strip_fields(model_id: str) -> bool:
+    """获取模型是否需要过滤非核心字段"""
+    provider = _get_registry().get_provider_for_model(model_id)
+    if not provider:
+        return False
+    for m in provider.models:
+        if m.id == model_id:
+            return m.strip_fields
+    return False
+
+
 # ============================================================
 # Anthropic 直通：原样转发，不做任何转换
 # ============================================================
 
-def _anthropic_headers(provider: Provider) -> dict[str, str]:
-    return {
-        "x-api-key": provider.api_key,
-        "Authorization": f"Bearer {provider.api_key}",
+def _anthropic_headers(provider: Provider, auth_style: str = "auto") -> dict[str, str]:
+    hdrs: dict[str, str] = {
         "anthropic-version": ANTHROPIC_VERSION,
         "content-type": "application/json",
     }
+    if auth_style == "bearer":
+        hdrs["Authorization"] = f"Bearer {provider.api_key}"
+    elif auth_style == "x-api-key":
+        hdrs["x-api-key"] = provider.api_key
+    else:  # auto
+        hdrs["x-api-key"] = provider.api_key
+        hdrs["Authorization"] = f"Bearer {provider.api_key}"
+    return hdrs
 
 
-async def anthropic_passthrough_streaming(body: dict, provider: Provider) -> StreamingResponse:
+# Anthropic passthrough 时保留的核心字段，其余过滤掉避免上游报错
+_ANTHROPIC_CORE_KEYS = {
+    "model", "messages", "max_tokens", "stream", "stop_sequences",
+    "temperature", "top_p", "top_k", "system", "tools", "tool_choice",
+}
+
+
+def _clean_anthropic_body(body: dict) -> dict:
+    """清理 Anthropic 请求体，移除上游可能不支持的字段（如 thinking）"""
+    return {k: v for k, v in body.items() if k in _ANTHROPIC_CORE_KEYS}
+
+
+async def anthropic_passthrough_streaming(body: dict, provider: Provider, auth_style: str = "auto", strip: bool = False) -> StreamingResponse:
     """Anthropic 直通流式：直接 pipe 上游 SSE 字节流"""
+    clean_body = _clean_anthropic_body(body) if strip else body
     base_url = provider.get_base_url("anthropic")
     raw_url = f"{base_url.rstrip('/')}/v1/messages"
     url = _dedupe_base_url_path(base_url, raw_url)
 
     async def pipe():
         for attempt in range(MAX_RETRIES):
+            hdrs = _anthropic_headers(provider, auth_style)
+            logger.info(f"-> anthropic passthrough url={url} auth_style={auth_style} body_keys={list(clean_body.keys())} body_size={len(json.dumps(clean_body))}")
             async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
-                async with client.stream("POST", url, json=body, headers=_anthropic_headers(provider)) as resp:
+                async with client.stream("POST", url, json=clean_body, headers=hdrs) as resp:
                     if resp.status_code != 200:
                         chunks = []
                         async for chunk in resp.aiter_text():
@@ -187,14 +230,15 @@ async def anthropic_passthrough_streaming(body: dict, provider: Provider) -> Str
                              headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
 
 
-async def anthropic_passthrough_non_streaming(body: dict, provider: Provider) -> JSONResponse:
+async def anthropic_passthrough_non_streaming(body: dict, provider: Provider, auth_style: str = "auto", strip: bool = False) -> JSONResponse:
     """Anthropic 直通非流式：原样返回 JSON"""
+    clean_body = _clean_anthropic_body(body) if strip else body
     base_url = provider.get_base_url("anthropic")
     raw_url = f"{base_url.rstrip('/')}/v1/messages"
     url = _dedupe_base_url_path(base_url, raw_url)
     for attempt in range(MAX_RETRIES):
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
-            resp = await client.post(url, json=body, headers=_anthropic_headers(provider))
+            resp = await client.post(url, json=clean_body, headers=_anthropic_headers(provider, auth_style))
             if resp.status_code != 200:
                 logger.warning(f"<- anthropic {resp.status_code} (attempt {attempt+1}): {resp.text[:300]}")
                 if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
@@ -343,17 +387,20 @@ async def openai_non_streaming(openai_req: dict, model: str, provider: Provider)
 
 async def openai_to_anthropic_streaming(anthropic_req: dict, model: str, provider: Provider) -> StreamingResponse:
     """Anthropic 流式直传（用于 OpenAI 模式收到 Anthropic 格式请求）"""
-    return await anthropic_passthrough_streaming(anthropic_req, provider)
+    return await anthropic_passthrough_streaming(anthropic_req, provider, _model_auth_style(model), _model_strip_fields(model))
 
 
 async def openai_to_anthropic_non_streaming(anthropic_req: dict, model: str, provider: Provider) -> JSONResponse:
     """Anthropic 非流式直传，然后将响应转换为 OpenAI 格式"""
+    auth_style = _model_auth_style(model)
+    strip = _model_strip_fields(model)
     base_url = provider.get_base_url("anthropic")
     raw_url = f"{base_url.rstrip('/')}/v1/messages"
     url = _dedupe_base_url_path(base_url, raw_url)
+    clean_body = _clean_anthropic_body(anthropic_req) if strip else anthropic_req
     for attempt in range(MAX_RETRIES):
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
-            resp = await client.post(url, json=anthropic_req, headers=_anthropic_headers(provider))
+            resp = await client.post(url, json=clean_body, headers=_anthropic_headers(provider, auth_style))
             if resp.status_code != 200:
                 logger.warning(f"<- anthropic {resp.status_code} (attempt {attempt+1}): {resp.text[:300]}")
                 if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
@@ -441,11 +488,13 @@ async def messages_endpoint(request: Request):
     await _inc_stats(model, provider.name)
 
     try:
+        auth_style = _model_auth_style(model)
+        strip = _model_strip_fields(model)
         if "anthropic" in supported:
             if is_stream:
-                return await anthropic_passthrough_streaming(body, provider)
+                return await anthropic_passthrough_streaming(body, provider, auth_style, strip)
             else:
-                return await anthropic_passthrough_non_streaming(body, provider)
+                return await anthropic_passthrough_non_streaming(body, provider, auth_style, strip)
         else:
             model_map = get_model_map()
             openai_req = convert_request(body, model_map=model_map)
@@ -732,10 +781,12 @@ async def admin_add_model(name: str, request: Request):
     if not p:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
     m = Model(id=data["id"], display_name=data.get("display_name", data["id"]),
-              supported_formats=data.get("supported_formats", ["openai", "anthropic"]))
+              supported_formats=data.get("supported_formats", ["openai", "anthropic"]),
+              auth_style=data.get("auth_style", "auto"),
+              strip_fields=data.get("strip_fields", False))
     p.models.append(m)
     r._persist()
-    return {"id": m.id, "display_name": m.display_name, "supported_formats": m.supported_formats, "provider_name": p.name}
+    return {"id": m.id, "display_name": m.display_name, "supported_formats": m.supported_formats, "auth_style": m.auth_style, "provider_name": p.name}
 
 
 async def _fetch_models_from_endpoint(base_url: str, api_key: str, fmt: str) -> tuple[bool, list, str]:
@@ -939,6 +990,91 @@ async def _test_connectivity(base_url: str, api_key: str, fmt: str) -> dict:
                 error = str(e)
 
     return {"success": success, "latency": latency, "url": base_url, "error": error, "method": method_used}
+
+
+@app.post("/api/providers/detect-auth")
+async def admin_detect_auth(request: Request):
+    """服务端探测 Anthropic 认证方式，用真实 key 测试"""
+    data = await request.json()
+    provider_name = data.get("provider_name", "")
+    test_model = data.get("test_model", "test")
+    p = _get_registry().get_provider(provider_name)
+    if not p:
+        return {"success": False, "error": f"Provider '{provider_name}' not found"}
+    base_url = p.get_base_url("anthropic")
+    if not base_url:
+        return {"success": False, "error": "Provider 未配置 Anthropic Base URL"}
+
+    raw_url = f"{base_url.rstrip('/')}/v1/messages"
+    url = _dedupe_base_url_path(base_url, raw_url)
+    body = {"model": test_model, "max_tokens": 50,
+            "messages": [{"role": "user", "content": "你是谁"}]}
+
+    results = {}
+    for style in ("bearer", "x-api-key", "auto"):
+        hdrs = {"anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json"}
+        if style == "bearer":
+            hdrs["Authorization"] = f"Bearer {p.api_key}"
+        elif style == "x-api-key":
+            hdrs["x-api-key"] = p.api_key
+        else:
+            hdrs["x-api-key"] = p.api_key
+            hdrs["Authorization"] = f"Bearer {p.api_key}"
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(url, json=body, headers=hdrs)
+                if resp.status_code == 200:
+                    results[style] = {"success": True, "status": 200}
+                else:
+                    results[style] = {"success": False, "status": resp.status_code,
+                                      "error": resp.text[:200]}
+        except Exception as e:
+            results[style] = {"success": False, "error": str(e)}
+
+    best = None
+    for s in ("bearer", "x-api-key", "auto"):
+        if results.get(s, {}).get("success"):
+            best = s
+            break
+
+    return {"success": best is not None, "best": best, "results": results}
+
+
+@app.post("/api/models/test")
+async def admin_test_model(request: Request):
+    """服务端用"你是谁"测试模型，返回响应内容"""
+    data = await request.json()
+    provider_name = data.get("provider_name", "")
+    model_id = data.get("model_id", "")
+    auth_style = data.get("auth_style", "auto")
+    p = _get_registry().get_provider(provider_name)
+    if not p:
+        return {"success": False, "error": f"Provider '{provider_name}' not found"}
+    base_url = p.get_base_url("anthropic")
+    if not base_url:
+        return {"success": False, "error": "Provider 未配置 Anthropic Base URL"}
+
+    raw_url = f"{base_url.rstrip('/')}/v1/messages"
+    url = _dedupe_base_url_path(base_url, raw_url)
+    hdrs = _anthropic_headers(p, auth_style)
+    body = {"model": model_id, "max_tokens": 100,
+            "messages": [{"role": "user", "content": "你是谁"}]}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=body, headers=hdrs)
+            if resp.status_code == 200:
+                rj = resp.json()
+                text = ""
+                for c in rj.get("content", []):
+                    if c.get("type") == "text":
+                        text += c.get("text", "")
+                return {"success": True, "status": 200, "response": text[:200]}
+            else:
+                return {"success": False, "status": resp.status_code, "error": resp.text[:200]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.post("/api/providers/{name}/test")

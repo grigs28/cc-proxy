@@ -290,6 +290,81 @@
             .catch(function(err) { showToast(err.message, 'error'); });
         }
 
+        function testProviderInline() {
+            // Provider-level test: no-op now, kept for compatibility
+        }
+
+        function detectAuthStyle() {
+            var providerName = document.getElementById('modal-add-model-provider').value;
+            var modelId = document.getElementById('modal-add-model-id').value.trim();
+            if (!providerName || !modelId) {
+                showToast('请先选择提供商并输入模型 ID', 'error');
+                return;
+            }
+            var btn = document.getElementById('detect-auth-btn');
+            btn.disabled = true;
+            btn.textContent = '探测中...';
+
+            api('/providers/detect-auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider_name: providerName, test_model: modelId })
+            })
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(function(data) {
+                if (data.success && data.best) {
+                    document.getElementById('modal-add-model-auth-style').value = data.best;
+                    var label = data.best === 'bearer' ? 'Authorization: Bearer' :
+                                data.best === 'x-api-key' ? 'x-api-key' : '自动';
+                    showToast('探测成功，已选择: ' + label);
+                } else {
+                    var errors = [];
+                    var r = data.results || {};
+                    for (var k in r) {
+                        if (!r[k].success) errors.push(k + ': HTTP ' + (r[k].status || '') + ' ' + (r[k].error || ''));
+                    }
+                    showToast('探测失败: ' + (errors.join('; ') || '所有方式均不可用'), 'error');
+                }
+            })
+            .catch(function(err) { showToast('探测失败: ' + err.message, 'error'); })
+            .finally(function() {
+                btn.disabled = false;
+                btn.textContent = '探测';
+            });
+        }
+
+        function testModelInline() {
+            var providerName = document.getElementById('modal-add-model-provider').value;
+            var modelId = document.getElementById('modal-add-model-id').value.trim();
+            var authStyle = document.getElementById('modal-add-model-auth-style').value;
+            if (!providerName || !modelId) {
+                showToast('请先选择提供商并输入模型 ID', 'error');
+                return;
+            }
+            var btn = document.getElementById('test-model-btn');
+            btn.disabled = true;
+            btn.textContent = '测试中...';
+
+            api('/models/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider_name: providerName, model_id: modelId, auth_style: authStyle })
+            })
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    showToast('测试成功: ' + (data.response || '有响应'));
+                } else {
+                    showToast('测试失败: HTTP ' + (data.status || '') + ' ' + (data.error || ''), 'error');
+                }
+            })
+            .catch(function(err) { showToast('测试失败: ' + err.message, 'error'); })
+            .finally(function() {
+                btn.disabled = false;
+                btn.textContent = '测试';
+            });
+        }
+
         function editProvider(name) {
             api('/providers/' + encodeURIComponent(name))
                 .then(function(r) {
@@ -424,7 +499,7 @@
                             '<td><span class="badge badge-primary">' + escapeHtml(m.provider_name) + '</span></td>' +
                             '<td><span class="badge" style="background:' + typeColor + '">' + typeLabel + '</span></td>' +
                             '<td><span class="status-indicator" id="model-status-' + safeId.replace(/[^a-zA-Z0-9]/g, '_') + '"><span class="status-dot" style="background:var(--text-secondary)"></span></span></td>' +
-                            '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button> <button class="btn btn-secondary btn-sm" onclick="editModel(\'' + safeName + '\',\'' + safeId + '\',\'' + escapeAttr(m.display_name || m.id) + '\',\'' + fmts.join(',') + '\')">编辑</button> <button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + safeName + '\',\'' + safeId + '\')">删除</button></td>';
+                            '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button> <button class="btn btn-secondary btn-sm" onclick="editModel(\'' + safeName + '\',\'' + safeId + '\',\'' + escapeAttr(m.display_name || m.id) + '\',\'' + fmts.join(',') + '\',\'' + (m.auth_style || 'auto') + '\',' + (m.strip_fields ? 'true' : 'false') + ')">编辑</button> <button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + safeName + '\',\'' + safeId + '\')">删除</button></td>';
                         tbody.appendChild(tr);
                     });
                 })
@@ -598,7 +673,7 @@
             loadAddModelProviderOptions();
         }
 
-        function openEditModelModal(providerName, modelId, displayName, fmts) {
+        function openEditModelModal(providerName, modelId, displayName, fmts, authStyle, stripFields) {
             document.getElementById('add-model-modal').classList.add('active');
             resetAddModelModal();
 
@@ -609,7 +684,7 @@
             document.getElementById('modal-add-model-editing-id').value = modelId;
 
             // 加载提供商选项并选中（可修改）
-            loadAddModelProviderOptionsForEdit(providerName);
+            loadAddModelProviderOptions(providerName);
             document.getElementById('modal-add-model-fetch-group').style.display = 'block';
 
             // 填充模型信息（可修改）
@@ -619,6 +694,9 @@
             // 设置格式
             document.getElementById('modal-add-model-fmt-openai').checked = fmts.includes('openai');
             document.getElementById('modal-add-model-fmt-anthropic').checked = fmts.includes('anthropic');
+            // 设置认证方式
+            document.getElementById('modal-add-model-auth-style').value = authStyle || 'auto';
+            document.getElementById('modal-add-model-strip-fields').checked = !!stripFields;
         }
 
         function closeAddModelModal() {
@@ -641,6 +719,8 @@
             document.getElementById('modal-add-model-display').value = '';
             document.getElementById('modal-add-model-fmt-openai').checked = true;
             document.getElementById('modal-add-model-fmt-anthropic').checked = true;
+            document.getElementById('modal-add-model-auth-style').value = 'auto';
+            document.getElementById('modal-add-model-strip-fields').checked = false;
             document.getElementById('modal-add-model-fetch-status').textContent = '';
         }
 
@@ -663,9 +743,9 @@
                 .catch(function(err) { console.error('加载提供商失败', err); });
         }
 
-        function editModel(providerName, modelId, displayName, fmtsStr) {
+        function editModel(providerName, modelId, displayName, fmtsStr, authStyle, stripFields) {
             var fmts = fmtsStr.split(',');
-            openEditModelModal(providerName, modelId, displayName, fmts);
+            openEditModelModal(providerName, modelId, displayName, fmts, authStyle, !!stripFields);
         }
 
         function onAddModelProviderChange() {
@@ -763,6 +843,8 @@
             if (document.getElementById('modal-add-model-fmt-anthropic').checked) fmts.push('anthropic');
             if (fmts.length === 0) { showToast('请至少选择一种格式', 'error'); return; }
 
+            var authStyle = document.getElementById('modal-add-model-auth-style').value;
+            var stripFields = document.getElementById('modal-add-model-strip-fields').checked;
             var modelIds = modelIdInput.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
             if (modelIds.length === 0) { showToast('请输入有效的模型 ID', 'error'); return; }
 
@@ -795,23 +877,23 @@
                         api('/providers/' + encodeURIComponent(editingProvider) + '/models/' + encodeURIComponent(editingId), { method: 'DELETE' })
                             .then(function() {}, function() {})
                             .then(function() {
-                                return doAddModels(providerName, newIds, displayName, fmts, modelIds);
+                                return doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, modelIds);
                             });
                     } else {
                         // 添加模式
-                        doAddModels(providerName, newIds, displayName, fmts, modelIds);
+                        doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, modelIds);
                     }
                 })
                 .catch(function(err) { showToast(err.message, 'error'); });
         }
 
-        function doAddModels(providerName, modelIds, displayName, fmts, allIds) {
+        function doAddModels(providerName, modelIds, displayName, fmts, authStyle, stripFields, allIds) {
             var promises = modelIds.map(function(mid) {
                 var dname = modelIds.length === 1 && displayName ? displayName : mid;
                 return api('/providers/' + encodeURIComponent(providerName) + '/models', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: mid, display_name: dname, supported_formats: fmts })
+                    body: JSON.stringify({ id: mid, display_name: dname, supported_formats: fmts, auth_style: authStyle, strip_fields: stripFields })
                 });
             });
 

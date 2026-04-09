@@ -31,7 +31,7 @@ CC-Proxy 是 Claude Code 的通用模型网关。**单端口设计**：同一端
 - **单端口双格式** — 同一端口同时支持 Anthropic 和 OpenAI 请求，自动路由
 - **自动格式路由** — provider 支持对应格式则直通，否则自动转换
 - **多提供商** — 不同模型自动路由到不同后端
-- **Web 管理面板** — 浏览器管理提供商、模型、连接测试
+- **Web 管理面板** — 浏览器管理提供商、模型、连接测试；支持模型级 `auth_style` 和 `strip_fields` 配置
 - **支持 `/model`** — 所有配置模型自动出现在 Claude Code 模型列表
 - **完整流式支持** — SSE 流式、Tool Use、Thinking 推理
 - **自动重试** — 瞬时错误（429、500、502、503）自动重试 3 次
@@ -131,6 +131,32 @@ providers:
         display_name: "Moonshot V1 128K"
 ```
 
+### 模型级高级配置
+
+每个模型可独立配置 `auth_style`（Anthropic 认证方式）和 `strip_fields`（过滤非核心字段）：
+
+```yaml
+providers:
+  - name: "Kimi"
+    api_key: "${KIMI_API_KEY}"
+    supported_formats: ["openai", "anthropic"]
+    base_url_openai: "https://api.kimi.com/coding"
+    base_url_anthropic: "https://api.kimi.com/coding"
+    models:
+      - id: "kimi-for-coding"
+        display_name: "Kimi For Coding"
+        supported_formats: ["openai", "anthropic"]
+        auth_style: "bearer"        # Anthropic 认证方式: auto/bearer/x-api-key
+        strip_fields: true          # 过滤 thinking、metadata 等字段
+```
+
+**auth_style** — Anthropic 直通时的认证方式：
+- `auto`（默认）— 同时发送 `x-api-key` 和 `Authorization: Bearer`
+- `bearer` — 仅发送 `Authorization: Bearer`
+- `x-api-key` — 仅发送 `x-api-key`
+
+**strip_fields** — 过滤 Claude Code 发送的非标准字段（如 `thinking`、`metadata`），避免上游报错。Kimi、MiniMax 等不支持 `thinking` 的模型建议开启。
+
 ## 格式路由说明
 
 | 入口端点 | 请求格式 | provider 支持 | 行为 |
@@ -208,7 +234,7 @@ CC-Proxy is a universal model gateway for Claude Code. **Single-port design**: o
 - **Single port, dual format** — both Anthropic and OpenAI requests on the same port, auto-routed
 - **Automatic format routing** — passthrough if provider supports the format, auto-convert otherwise
 - **Multi-provider** — route different models to different backends automatically
-- **Web admin panel** — add/edit/delete providers and models from the browser
+- **Web admin panel** — add/edit/delete providers and models from the browser; per-model `auth_style` and `strip_fields` configuration
 - **`/model` ready** — all configured models appear in Claude Code's model picker
 - **Full streaming** — SSE streaming with tool use, thinking, and function calling
 - **Auto-retry** — transient errors (429, 500, 502, 503) retried up to 3 times
