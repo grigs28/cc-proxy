@@ -535,26 +535,6 @@ tbody tr:hover {
     background: var(--danger-bg);
 }
 
-.model-chip .fmt-badge {
-    font-size: 0.65rem;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-}
-.model-chip .fmt-openai {
-    background: var(--openai-bg);
-    color: var(--openai);
-}
-.model-chip .fmt-anthropic {
-    background: var(--anthropic-bg);
-    color: var(--anthropic);
-}
-.model-chip .fmt-both {
-    background: linear-gradient(135deg, var(--openai-bg) 50%, var(--anthropic-bg) 50%);
-    color: var(--text-primary);
-}
-
 .toast-container {
     position: fixed;
     bottom: 2rem;

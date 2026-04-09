@@ -37,11 +37,10 @@
         });
 
         function togglePassword() {
-            var inp = document.getElementById('password-input');
-            inp.type = inp.type === 'password' ? 'text' : 'password';
+            togglePwdField('password-input');
         }
 
-        function togglePwdField(id, btn) {
+        function togglePwdField(id) {
             var inp = document.getElementById(id);
             inp.type = inp.type === 'password' ? 'text' : 'password';
         }
@@ -645,7 +644,7 @@
             document.getElementById('modal-add-model-fetch-status').textContent = '';
         }
 
-        function loadAddModelProviderOptionsForEdit(selectedProvider) {
+        function loadAddModelProviderOptions(selectedProvider) {
             api('/providers')
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
@@ -667,22 +666,6 @@
         function editModel(providerName, modelId, displayName, fmtsStr) {
             var fmts = fmtsStr.split(',');
             openEditModelModal(providerName, modelId, displayName, fmts);
-        }
-
-        function loadAddModelProviderOptions() {
-            api('/providers')
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    var sel = document.getElementById('modal-add-model-provider');
-                    sel.innerHTML = '<option value="">-- 请选择提供商 --</option>';
-                    (data.providers || []).forEach(function(p) {
-                        var opt = document.createElement('option');
-                        opt.value = p.name;
-                        opt.textContent = p.name;
-                        sel.appendChild(opt);
-                    });
-                })
-                .catch(function(err) { console.error('加载提供商失败', err); });
         }
 
         function onAddModelProviderChange() {
