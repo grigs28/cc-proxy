@@ -29,13 +29,17 @@ class Model:
 class Provider:
     """提供商定义"""
     name: str
-    base_url: str
     api_key: str
     timeout: int = 300
     models: list[Model] = field(default_factory=list)
     provider_type: str = "openai"  # 兼容旧配置
     # 支持的格式列表：["openai"]、["anthropic"] 或 ["openai", "anthropic"]
     supported_formats: list[str] = field(default_factory=lambda: ["openai", "anthropic"])
+    # 新字段：分别存储 OpenAI 和 Anthropic 格式的 base_url
+    base_url_openai: str = ""
+    base_url_anthropic: str = ""
+    # 兼容旧字段：单一 base_url（用于旧配置迁移）
+    base_url: str = ""
 
     @staticmethod
     def _normalize_base_url(url: str) -> str:
@@ -59,8 +63,6 @@ class Provider:
         models = [
             Model._from_dict(m) for m in data.get("models", [])
         ]
-        # 规范化 base_url
-        base_url = cls._normalize_base_url(data["base_url"])
 
         # supported_formats: 新字段，优先读取
         fmts = data.get("supported_formats")
@@ -68,6 +70,34 @@ class Provider:
             # 降级：根据旧 type 字段推断
             ptype = data.get("type", "openai")
             fmts = ["anthropic"] if ptype == "anthropic" else ["openai"]
+
+        # 处理 base_url 字段
+        base_url = data.get("base_url", "")
+        base_url_openai = data.get("base_url_openai", "")
+        base_url_anthropic = data.get("base_url_anthropic", "")
+
+        # 规范化 base_url
+        if base_url:
+            base_url = cls._normalize_base_url(base_url)
+
+        # 如果新的双 URL 字段为空，从旧的 base_url 推导
+        if not base_url_openai and not base_url_anthropic and base_url:
+            # 旧配置：只有一个 base_url，根据 supported_formats 推断
+            if "anthropic" in fmts and "openai" not in fmts:
+                # 旧版 anthropic 类型 provider，base_url 即为 anthropic URL
+                base_url_anthropic = base_url
+            elif "openai" in fmts and "anthropic" not in fmts:
+                base_url_openai = base_url
+            else:
+                # 两种格式都支持，假设 base_url 是 openai 格式
+                base_url_openai = base_url
+                # 尝试推导 anthropic URL（常见模式：去掉 /v1 或 /anthropic）
+                if base_url.endswith("/anthropic"):
+                    base_url_anthropic = base_url
+                elif base_url.endswith("/v1"):
+                    base_url_anthropic = base_url[:-3] if base_url.endswith("/v1") else base_url
+                else:
+                    base_url_anthropic = base_url + "/anthropic"
 
         return cls(
             name=data["name"],
@@ -77,22 +107,44 @@ class Provider:
             models=models,
             provider_type=data.get("type", "openai"),
             supported_formats=fmts,
+            base_url_openai=base_url_openai,
+            base_url_anthropic=base_url_anthropic,
         )
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
-        return {
+        result = {
             "name": self.name,
-            "base_url": self.base_url,
             "api_key": self.api_key,
             "timeout": self.timeout,
             "type": self.provider_type,
             "supported_formats": self.supported_formats,
+            "base_url_openai": self.base_url_openai,
+            "base_url_anthropic": self.base_url_anthropic,
             "models": [
                 {"id": m.id, "display_name": m.display_name, "supported_formats": m.supported_formats}
                 for m in self.models
             ],
         }
+        # 兼容旧字段：如果新字段为空，保留 base_url
+        if not self.base_url_openai and not self.base_url_anthropic:
+            result["base_url"] = self.base_url
+        return result
+
+    def get_base_url(self, fmt: str) -> str:
+        """根据格式获取对应的 base_url
+
+        Args:
+            fmt: 格式类型，"openai" 或 "anthropic"
+
+        Returns:
+            对应格式的 base_url
+        """
+        if fmt == "openai":
+            return self.base_url_openai or self.base_url
+        elif fmt == "anthropic":
+            return self.base_url_anthropic or self.base_url
+        return self.base_url or self.base_url_openai or self.base_url_anthropic
 
     def has_model(self, model_id: str) -> bool:
         """检查提供商是否拥有指定模型"""

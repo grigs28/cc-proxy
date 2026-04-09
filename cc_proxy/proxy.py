@@ -53,6 +53,7 @@ _admin_tokens: set[str] = set()
 _password_change_required: bool = True  # 首次启动强制改密码标志
 _registry = None
 _proxy_mode: str = "anthropic"  # "anthropic" 或 "openai"
+_proxy_port: int = 5566  # 实际监听端口
 
 
 def _is_default_password() -> bool:
@@ -65,6 +66,11 @@ def _is_default_password() -> bool:
 def _hash_password(password: str) -> str:
     """哈希密码用于存储（简单实现，生产环境建议使用 bcrypt）"""
     return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _dedupe_base_url_path(base_url: str, target_url: str) -> str:
+    """不做任何 URL 变换，直接返回原 URL"""
+    return target_url
 
 
 def _validate_password_strength(password: str) -> tuple[bool, str]:
@@ -140,7 +146,9 @@ def _anthropic_headers(provider: Provider) -> dict[str, str]:
 
 async def anthropic_passthrough_streaming(body: dict, provider: Provider) -> StreamingResponse:
     """Anthropic 直通流式：直接 pipe 上游 SSE 字节流"""
-    url = f"{provider.base_url.rstrip('/')}/v1/messages"
+    base_url = provider.get_base_url("anthropic")
+    raw_url = f"{base_url.rstrip('/')}/v1/messages"
+    url = _dedupe_base_url_path(base_url, raw_url)
 
     async def pipe():
         for attempt in range(MAX_RETRIES):
@@ -166,7 +174,9 @@ async def anthropic_passthrough_streaming(body: dict, provider: Provider) -> Str
 
 async def anthropic_passthrough_non_streaming(body: dict, provider: Provider) -> JSONResponse:
     """Anthropic 直通非流式：原样返回 JSON"""
-    url = f"{provider.base_url.rstrip('/')}/v1/messages"
+    base_url = provider.get_base_url("anthropic")
+    raw_url = f"{base_url.rstrip('/')}/v1/messages"
+    url = _dedupe_base_url_path(base_url, raw_url)
     for attempt in range(MAX_RETRIES):
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
             resp = await client.post(url, json=body, headers=_anthropic_headers(provider))
@@ -184,6 +194,9 @@ async def anthropic_passthrough_non_streaming(body: dict, provider: Provider) ->
 
 async def openai_streaming(openai_req: dict, model: str, provider: Provider) -> StreamingResponse:
     """OpenAI 流式 -> Anthropic SSE"""
+    base_url = provider.get_base_url("openai")
+    raw_url = f"{base_url.rstrip('/')}/v1/chat/completions"
+    url = _dedupe_base_url_path(base_url, raw_url)
 
     async def generate():
         msg_id = generate_msg_id()
@@ -195,9 +208,9 @@ async def openai_streaming(openai_req: dict, model: str, provider: Provider) -> 
         out_tokens = 0
 
         for attempt in range(MAX_RETRIES):
-            async with httpx.AsyncClient(base_url=provider.base_url, timeout=httpx.Timeout(provider.timeout)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
                 hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
-                async with client.stream("POST", "/v1/chat/completions", json=openai_req, headers=hdrs) as resp:
+                async with client.stream("POST", url, json=openai_req, headers=hdrs) as resp:
                     if resp.status_code != 200:
                         err = ""
                         async for c in resp.aiter_text():
@@ -284,10 +297,13 @@ async def openai_streaming(openai_req: dict, model: str, provider: Provider) -> 
 
 async def openai_non_streaming(openai_req: dict, model: str, provider: Provider) -> JSONResponse:
     """OpenAI 非流式 -> Anthropic JSON"""
+    base_url = provider.get_base_url("openai")
+    raw_url = f"{base_url.rstrip('/')}/v1/chat/completions"
+    url = _dedupe_base_url_path(base_url, raw_url)
     for attempt in range(MAX_RETRIES):
-        async with httpx.AsyncClient(base_url=provider.base_url, timeout=httpx.Timeout(provider.timeout)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
             hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
-            resp = await client.post("/v1/chat/completions", json=openai_req, headers=hdrs)
+            resp = await client.post(url, json=openai_req, headers=hdrs)
             if resp.status_code != 200:
                 logger.warning(f"<- openai {resp.status_code} (attempt {attempt+1}): {resp.text[:300]}")
                 if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
@@ -310,7 +326,9 @@ async def openai_non_streaming(openai_req: dict, model: str, provider: Provider)
 
 async def openai_to_anthropic_streaming(openai_req: dict, model: str, provider: Provider) -> StreamingResponse:
     """OpenAI 流式 -> Anthropic SSE (用于 OpenAI -> Anthropic 转换)"""
-    url = f"{provider.base_url.rstrip('/')}/v1/messages"
+    base_url = provider.get_base_url("anthropic")
+    raw_url = f"{base_url.rstrip('/')}/v1/messages"
+    url = _dedupe_base_url_path(base_url, raw_url)
 
     async def pipe():
         for attempt in range(MAX_RETRIES):
@@ -336,7 +354,9 @@ async def openai_to_anthropic_streaming(openai_req: dict, model: str, provider: 
 
 async def openai_to_anthropic_non_streaming(openai_req: dict, model: str, provider: Provider) -> JSONResponse:
     """OpenAI 非流式 -> Anthropic JSON (用于 OpenAI -> Anthropic 转换)"""
-    url = f"{provider.base_url.rstrip('/')}/v1/messages"
+    base_url = provider.get_base_url("anthropic")
+    raw_url = f"{base_url.rstrip('/')}/v1/messages"
+    url = _dedupe_base_url_path(base_url, raw_url)
     for attempt in range(MAX_RETRIES):
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
             resp = await client.post(url, json=openai_req, headers=_anthropic_headers(provider))
@@ -483,7 +503,9 @@ async def chat_completions_endpoint(request: Request):
             # OpenAI mode
             if "openai" in supported:
                 # 直通：直接 POST 到 /v1/chat/completions
-                url = f"{provider.base_url.rstrip('/')}/v1/chat/completions"
+                base_url = provider.get_base_url("openai")
+                raw_url = f"{base_url.rstrip('/')}/v1/chat/completions"
+                url = _dedupe_base_url_path(base_url, raw_url)
                 hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
                 if is_stream:
                     return StreamingResponse(
@@ -657,7 +679,7 @@ async def admin_status():
         "uptime": int(time.time() - _start_time),
         "provider_count": len(r.list_providers()),
         "model_count": len(r.list_all_models()),
-        "proxy_port": sc.get("port", 5566),
+        "proxy_port": _proxy_port,
         "address": sc.get("host", "0.0.0.0"),
         "config_path": _config_path,
         "stats": get_stats(),
@@ -728,6 +750,125 @@ async def admin_add_model(name: str, request: Request):
     return {"id": m.id, "display_name": m.display_name, "supported_formats": m.supported_formats, "provider_name": p.name}
 
 
+async def _fetch_models_from_endpoint(base_url: str, api_key: str, fmt: str) -> tuple[bool, list, str]:
+    """从指定端点获取模型列表
+
+    Returns:
+        (success, models_list, error_message)
+    """
+    def parse_models(data):
+        """统一解析模型列表，支持多种响应格式
+
+        支持的字段:
+        - data: 智谱等
+        - models: OpenAI 标准
+        - object: 某些 API
+        - data.list: 某些 API
+        - 直接是数组
+        """
+        models = []
+        source = None
+
+        if isinstance(data, dict):
+            # 尝试多种可能的字段名
+            for key in ["data", "models", "object", "list", "items", "data.list"]:
+                if key in data:
+                    source = data[key]
+                    break
+            # 嵌套情况: data.list
+            if source is None and "data" in data and isinstance(data["data"], dict) and "list" in data["data"]:
+                source = data["data"]["list"]
+        elif isinstance(data, list):
+            source = data
+
+        if isinstance(source, list):
+            for m in source:
+                if isinstance(m, str):
+                    models.append({"id": m, "display_name": m})
+                elif isinstance(m, dict):
+                    # 尝试多种 id 和 name 字段
+                    mid = m.get("id") or m.get("name") or m.get("model") or m.get("model_id") or str(m)
+                    mname = (m.get("display_name") or m.get("name") or m.get("model") or m.get("model_name") or mid)
+                    models.append({"id": mid, "display_name": mname})
+        return models
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        if fmt == "openai":
+            # OpenAI: GET /models
+            try:
+                raw_url = f"{base_url.rstrip('/')}/models"
+                url = _dedupe_base_url_path(base_url, raw_url)
+                hdrs = {"Authorization": f"Bearer {api_key}"}
+                resp = await client.get(url, headers=hdrs)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = parse_models(data)
+                    return True, models, ""
+                else:
+                    return False, [], f"HTTP {resp.status_code}"
+            except Exception as e:
+                return False, [], str(e)
+        else:
+            # Anthropic: GET /v1/models
+            try:
+                raw_url = f"{base_url.rstrip('/')}/v1/models"
+                url = _dedupe_base_url_path(base_url, raw_url)
+                hdrs = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+                resp = await client.get(url, headers=hdrs)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = parse_models(data)
+                    return True, models, ""
+                else:
+                    return False, [], f"HTTP {resp.status_code}"
+            except Exception as e:
+                return False, [], str(e)
+
+
+@app.get("/api/providers/{name}/models")
+async def admin_get_provider_upstream_models(name: str):
+    """从上游 provider 获取可用模型列表，尝试所有支持的格式"""
+    p = _get_registry().get_provider(name)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+
+    all_models = []
+    errors = []
+
+    # 尝试 OpenAI endpoint
+    if p.supports_format("openai"):
+        openai_url = p.get_base_url("openai")
+        if openai_url:
+            success, models, err = await _fetch_models_from_endpoint(openai_url, p.api_key, "openai")
+            if success:
+                all_models.extend(models)
+            else:
+                errors.append(f"OpenAI: {err}")
+
+    # 尝试 Anthropic endpoint
+    if p.supports_format("anthropic"):
+        anthropic_url = p.get_base_url("anthropic")
+        if anthropic_url:
+            success, models, err = await _fetch_models_from_endpoint(anthropic_url, p.api_key, "anthropic")
+            if success:
+                all_models.extend(models)
+            else:
+                errors.append(f"Anthropic: {err}")
+
+    if not all_models and errors:
+        raise HTTPException(status_code=502, detail="获取模型失败: " + "; ".join(errors))
+
+    # 去重
+    seen = set()
+    unique_models = []
+    for m in all_models:
+        if m["id"] not in seen:
+            seen.add(m["id"])
+            unique_models.append(m)
+
+    return {"models": unique_models}
+
+
 @app.delete("/api/providers/{name}/models/{model_id}")
 async def admin_delete_model(name: str, model_id: str):
     r = _get_registry()
@@ -749,26 +890,95 @@ async def admin_reload():
     return {"success": True, "message": "Configuration reloaded"}
 
 
+async def _test_connectivity(base_url: str, api_key: str, fmt: str) -> dict:
+    """测试一个端点的连通性，同时尝试 GET 和 POST"""
+    t0 = time.time()
+    success = False
+    latency = 0
+    error = None
+    method_used = None
+
+    # 定义两种测试方法
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        if fmt == "openai":
+            # OpenAI: 尝试 GET /models 和 POST /chat/completions
+            for method in ["GET", "POST"]:
+                try:
+                    hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                    if method == "GET":
+                        raw_url = f"{base_url.rstrip('/')}/models"
+                        resp = await client.get(raw_url, headers=hdrs)
+                    else:
+                        raw_url = f"{base_url.rstrip('/')}/chat/completions"
+                        body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
+                        resp = await client.post(raw_url, json=body, headers=hdrs)
+                    latency = int((time.time() - t0) * 1000)
+                    # 2xx, 401(认证失败但端点通), 529(过载但端点通) 都算通
+                    if resp.status_code in (200, 401, 529):
+                        success = True
+                        method_used = method
+                        if resp.status_code == 401:
+                            error = "key无效"
+                        elif resp.status_code == 529:
+                            error = "服务过载"
+                        break
+                    else:
+                        error = f"HTTP {resp.status_code}"
+                except Exception as e:
+                    error = str(e)
+            return {"success": success, "latency": latency, "url": base_url, "error": error, "method": method_used}
+        else:
+            # Anthropic: 尝试 GET /v1/models 和 POST /v1/messages
+            for method in ["GET", "POST"]:
+                try:
+                    hdrs = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json"}
+                    if method == "GET":
+                        raw_url = f"{base_url.rstrip('/')}/v1/models"
+                        resp = await client.get(raw_url, headers=hdrs)
+                    else:
+                        raw_url = f"{base_url.rstrip('/')}/v1/messages"
+                        body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
+                        resp = await client.post(raw_url, json=body, headers=hdrs)
+                    latency = int((time.time() - t0) * 1000)
+                    if resp.status_code in (200, 401, 529):
+                        success = True
+                        method_used = method
+                        if resp.status_code == 401:
+                            error = "key无效"
+                        elif resp.status_code == 529:
+                            error = "服务过载"
+                        break
+                    else:
+                        error = f"HTTP {resp.status_code}"
+                except Exception as e:
+                    error = str(e)
+            return {"success": success, "latency": latency, "url": base_url, "error": error, "method": method_used}
+
+
 @app.post("/api/providers/{name}/test")
 async def admin_test_provider(name: str):
+    """测试提供商的连通性，分别测试 OpenAI 和 Anthropic 端点"""
     p = _get_registry().get_provider(name)
     if not p:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
-    t0 = time.time()
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            if p.provider_type == "anthropic":
-                url = f"{p.base_url.rstrip('/')}/v1/models"
-                hdrs = {"x-api-key": p.api_key, "anthropic-version": ANTHROPIC_VERSION}
-            else:
-                url = f"{p.base_url.rstrip('/')}/models"
-                hdrs = {"Authorization": f"Bearer {p.api_key}"}
-            resp = await client.get(url, headers=hdrs)
-            ms = int((time.time() - t0) * 1000)
-            return {"success": resp.status_code == 200, "latency": ms,
-                    "error": None if resp.status_code == 200 else f"HTTP {resp.status_code}"}
-    except Exception as e:
-        return {"success": False, "error": str(e), "latency": int((time.time() - t0) * 1000)}
+
+    results = {}
+
+    # 测试 OpenAI endpoint
+    if p.supports_format("openai"):
+        openai_url = p.get_base_url("openai")
+        if openai_url:
+            results["openai"] = await _test_connectivity(openai_url, p.api_key, "openai")
+
+    # 测试 Anthropic endpoint
+    if p.supports_format("anthropic"):
+        anthropic_url = p.get_base_url("anthropic")
+        if anthropic_url:
+            results["anthropic"] = await _test_connectivity(anthropic_url, p.api_key, "anthropic")
+
+    # 汇总结果
+    all_success = all(r["success"] for r in results.values())
+    return {"success": all_success, "results": results}
 
 
 @app.get("/api/stats")
@@ -783,7 +993,7 @@ async def catch_all(request: Request, path: str):
         "type": "error", "error": {"type": "not_found_error", "message": f"Endpoint /{path} not found"}})
 
 
-def create_app(config_path: str = ".env", mode: str = "anthropic") -> FastAPI:
+def create_app(config_path: str = ".env", mode: str = "anthropic", port: int = None) -> FastAPI:
     """创建 FastAPI 应用
 
     Args:
@@ -791,10 +1001,13 @@ def create_app(config_path: str = ".env", mode: str = "anthropic") -> FastAPI:
         mode: 运行模式，"anthropic" 或 "openai"
             - anthropic: 端口 5566，接收 Claude Code 的 Anthropic 格式请求
             - openai: 端口 5567，接收其他客户端的 OpenAI 格式请求
+        port: 实际监听端口
     """
-    global _config_path, _proxy_mode
+    global _config_path, _proxy_mode, _proxy_port
     _config_path = config_path
     _proxy_mode = mode
+    if port is not None:
+        _proxy_port = port
     init_config(config_path)
     _get_registry().reload()
     return app

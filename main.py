@@ -41,7 +41,7 @@ def run_single(mode: str = "anthropic", port: int = None):
     logger.info(f"CC-Proxy [{mode}模式] 启动: http://{host}:{port}")
 
     from cc_proxy.proxy import create_app
-    app = create_app(config_path, mode=mode)
+    app = create_app(config_path, mode=mode, port=port)
 
     uvicorn.run(
         app,
