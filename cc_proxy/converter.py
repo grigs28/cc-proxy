@@ -721,17 +721,28 @@ def reverse_convert_response(anthropic_resp: dict) -> dict:
 
 # --- Error Conversion ---
 
-def convert_error(status_code: int, openai_error: dict) -> tuple[int, dict]:
+def convert_error(status_code: int, openai_error) -> tuple[int, dict]:
     """Convert OpenAI error response to Anthropic format.
 
     Args:
         status_code: HTTP status code from upstream
-        openai_error: OpenAI error response body
+        openai_error: OpenAI error response body (dict or str)
 
     Returns:
         Tuple of (status_code, anthropic_error_body)
     """
+    # 兼容 string 类型（上游返回纯文本错误）
+    if isinstance(openai_error, str):
+        return status_code, {
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": openai_error,
+            },
+        }
     error_body = openai_error.get("error", {})
+    if isinstance(error_body, str):
+        error_body = {"message": error_body}
     error_type = error_body.get("type", "api_error")
     type_map = {
         "invalid_request_error": "invalid_request_error",
