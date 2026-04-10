@@ -1,7 +1,7 @@
 """测试 URL 路径去重功能"""
 import pytest
 
-from cc_proxy.proxy import _dedupe_base_url_path
+from cc_proxy.urls import dedupe_base_url_path as _dedupe_base_url_path
 
 
 class TestUrlDedupe:

@@ -1,0 +1,476 @@
+"""管理 API 模块 — 提供商/模型 CRUD、测试诊断、UI 服务"""
+import asyncio
+import logging
+import os
+import time
+from pathlib import Path
+
+import httpx
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+
+from cc_proxy.auth import (
+    is_password_change_required,
+    handle_login,
+    handle_check_password_required,
+    handle_change_password,
+)
+from cc_proxy.client import (
+    ANTHROPIC_VERSION,
+    anthropic_headers,
+)
+from cc_proxy.config import get_server_config, reload_config
+from cc_proxy.providers import Model, get_registry
+from cc_proxy.stats import get as get_stats
+from cc_proxy.urls import build_openai_url, dedupe_base_url_path, mask_api_key
+
+logger = logging.getLogger("cc-proxy")
+
+router = APIRouter()
+
+# 由 proxy.py 在 create_app 时设置
+proxy_port: int = 5566
+config_path: str = ".env"
+
+
+# ============================================================
+# UI 页面
+# ============================================================
+
+@router.get("/", response_class=HTMLResponse)
+async def index():
+    return await _serve_admin()
+
+
+@router.get("/admin", response_class=HTMLResponse)
+async def admin_page():
+    return await _serve_admin()
+
+
+async def _serve_admin():
+    p = Path(os.path.dirname(__file__)) / "static" / "index.html"
+    try:
+        content = p.read_bytes()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return HTMLResponse(content=content, headers={"Content-Length": str(len(content))})
+
+
+# ============================================================
+# 认证端点
+# ============================================================
+
+@router.post("/api/auth")
+async def admin_auth(request: Request):
+    return await handle_login(request)
+
+
+@router.post("/api/auth/check")
+async def admin_check_password_required():
+    return await handle_check_password_required()
+
+
+@router.post("/api/auth/password")
+async def admin_change_password(request: Request):
+    return await handle_change_password(request)
+
+
+# ============================================================
+# 状态 & 统计
+# ============================================================
+
+@router.get("/api/status")
+async def admin_status():
+    sc = get_server_config()
+    r = get_registry()
+    return {
+        "status": "ok",
+        "uptime": int(get_stats()["uptime"]),
+        "provider_count": len(r.list_providers()),
+        "model_count": len(r.list_all_models()),
+        "proxy_port": proxy_port,
+        "address": sc.get("host", "0.0.0.0"),
+        "config_path": config_path,
+        "stats": get_stats(),
+        "requires_password_change": is_password_change_required(),
+    }
+
+
+@router.get("/api/stats")
+async def admin_stats():
+    return get_stats()
+
+
+# ============================================================
+# 提供商 CRUD
+# ============================================================
+
+@router.get("/api/providers")
+async def admin_list_providers():
+    return {"providers": [mask_api_key(p.to_dict()) for p in get_registry().list_providers()]}
+
+
+@router.get("/api/providers/{name}")
+async def admin_get_provider(name: str):
+    p = get_registry().get_provider(name)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+    return mask_api_key(p.to_dict())
+
+
+@router.post("/api/providers")
+async def admin_add_provider(request: Request):
+    data = await request.json()
+    try:
+        return mask_api_key(get_registry().add_provider(data).to_dict())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/api/providers/{name}")
+async def admin_update_provider(name: str, request: Request):
+    data = await request.json()
+    r = get_registry()
+    ex = r.get_provider(name)
+    if ex and "****" in data.get("api_key", ""):
+        data["api_key"] = ex.api_key
+    p = r.update_provider(name, data)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+    return mask_api_key(p.to_dict())
+
+
+@router.delete("/api/providers/{name}")
+async def admin_delete_provider(name: str):
+    if not get_registry().remove_provider(name):
+        raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+    return {"success": True}
+
+
+# ============================================================
+# 模型 CRUD
+# ============================================================
+
+@router.get("/api/models")
+async def admin_list_models():
+    return {"models": get_registry().list_all_models()}
+
+
+@router.post("/api/providers/{name}/models")
+async def admin_add_model(name: str, request: Request):
+    data = await request.json()
+    if not data.get("id"):
+        raise HTTPException(status_code=400, detail="Model 'id' is required")
+    r = get_registry()
+    p = r.get_provider(name)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+    m = Model(id=data["id"], display_name=data.get("display_name", data["id"]),
+              supported_formats=data.get("supported_formats", ["openai", "anthropic"]),
+              auth_style=data.get("auth_style", "auto"),
+              strip_fields=data.get("strip_fields", False))
+    p.models.append(m)
+    r._persist()
+    return {"id": m.id, "display_name": m.display_name, "supported_formats": m.supported_formats,
+            "auth_style": m.auth_style, "provider_name": p.name}
+
+
+@router.get("/api/providers/{name}/models")
+async def admin_get_provider_upstream_models(name: str):
+    """从上游 provider 获取可用模型列表，尝试所有支持的格式"""
+    p = get_registry().get_provider(name)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+
+    all_models = []
+    errors = []
+
+    fetch_tasks = {}
+    if p.supports_format("openai"):
+        openai_url = p.get_base_url("openai")
+        if openai_url:
+            fetch_tasks["openai"] = _fetch_models_from_endpoint(openai_url, p.api_key, "openai")
+    if p.supports_format("anthropic"):
+        anthropic_url = p.get_base_url("anthropic")
+        if anthropic_url:
+            fetch_tasks["anthropic"] = _fetch_models_from_endpoint(anthropic_url, p.api_key, "anthropic")
+
+    if fetch_tasks:
+        keys = list(fetch_tasks.keys())
+        results = await asyncio.gather(*fetch_tasks.values())
+        for fmt, (success, models, err) in zip(keys, results):
+            if success:
+                all_models.extend(models)
+            else:
+                errors.append(f"{fmt.title()}: {err}")
+
+    if not all_models and errors:
+        raise HTTPException(status_code=502, detail="获取模型失败: " + "; ".join(errors))
+
+    # 去重
+    seen = set()
+    unique_models = []
+    for m in all_models:
+        if m["id"] not in seen:
+            seen.add(m["id"])
+            unique_models.append(m)
+
+    return {"models": unique_models}
+
+
+@router.delete("/api/providers/{name}/models/{model_id}")
+async def admin_delete_model(name: str, model_id: str):
+    r = get_registry()
+    p = r.get_provider(name)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+    orig = len(p.models)
+    p.models = [m for m in p.models if m.id != model_id]
+    if len(p.models) == orig:
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
+    r._persist()
+    return {"success": True}
+
+
+@router.put("/api/providers/{name}/models/{model_id}")
+async def admin_update_model(name: str, model_id: str, request: Request):
+    """更新模型配置"""
+    r = get_registry()
+    p = r.get_provider(name)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+
+    data = await request.json()
+
+    for m in p.models:
+        if m.id == model_id:
+            m.display_name = data.get("display_name", m.display_name)
+            m.supported_formats = data.get("supported_formats", m.supported_formats)
+            if "auth_style" in data:
+                m.auth_style = data["auth_style"]
+            if "strip_fields" in data:
+                m.strip_fields = data["strip_fields"]
+            r._persist()
+            return {"id": m.id, "display_name": m.display_name, "supported_formats": m.supported_formats,
+                    "auth_style": m.auth_style, "strip_fields": m.strip_fields}
+
+    raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
+
+
+# ============================================================
+# 配置重载
+# ============================================================
+
+@router.post("/api/config/reload")
+async def admin_reload():
+    reload_config()
+    get_registry().reload()
+    return {"success": True, "message": "Configuration reloaded"}
+
+
+# ============================================================
+# 测试 & 诊断
+# ============================================================
+
+async def _test_connectivity(base_url: str, api_key: str, fmt: str) -> dict:
+    """测试端点连通性"""
+    t0 = time.time()
+    success = False
+    latency = 0
+    error = None
+    method_used = None
+
+    if fmt == "openai":
+        hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        post_url = build_openai_url(base_url, "/v1/chat/completions")
+        get_url = build_openai_url(base_url, "/v1/models")
+    else:
+        hdrs = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json"}
+        post_url = f"{base_url.rstrip('/')}/v1/messages"
+        get_url = f"{base_url.rstrip('/')}/v1/models"
+
+    post_url = dedupe_base_url_path(base_url, post_url) if fmt != "openai" else post_url
+    get_url = dedupe_base_url_path(base_url, get_url) if fmt != "openai" else get_url
+
+    post_body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for method, url in [("POST", post_url), ("GET", get_url)]:
+            try:
+                if method == "GET":
+                    resp = await client.get(url, headers=hdrs)
+                else:
+                    resp = await client.post(url, json=post_body, headers=hdrs)
+                latency = int((time.time() - t0) * 1000)
+                if resp.status_code in (200, 401, 403, 429, 529):
+                    success = True
+                    method_used = method
+                    if resp.status_code == 401:
+                        error = "key无效"
+                    elif resp.status_code == 403:
+                        error = "权限不足"
+                    elif resp.status_code == 429:
+                        error = "请求过频"
+                    elif resp.status_code == 529:
+                        error = "服务过载"
+                    break
+                else:
+                    error = f"HTTP {resp.status_code}"
+            except Exception as e:
+                error = str(e)
+
+    return {"success": success, "latency": latency, "url": base_url, "error": error, "method": method_used}
+
+
+async def _fetch_models_from_endpoint(base_url: str, api_key: str, fmt: str) -> tuple[bool, list, str]:
+    """从指定端点获取模型列表"""
+    def parse_models(data):
+        models = []
+        source = None
+        if isinstance(data, dict):
+            for key in ["data", "models", "object", "list", "items", "data.list"]:
+                if key in data:
+                    source = data[key]
+                    break
+            if source is None and "data" in data and isinstance(data["data"], dict) and "list" in data["data"]:
+                source = data["data"]["list"]
+        elif isinstance(data, list):
+            source = data
+
+        if isinstance(source, list):
+            for m in source:
+                if isinstance(m, str):
+                    models.append({"id": m, "display_name": m})
+                elif isinstance(m, dict):
+                    mid = m.get("id") or m.get("name") or m.get("model") or m.get("model_id") or str(m)
+                    mname = (m.get("display_name") or m.get("name") or m.get("model")
+                             or m.get("model_name") or mid)
+                    models.append({"id": mid, "display_name": mname})
+        return models
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        if fmt == "openai":
+            url = build_openai_url(base_url, "/v1/models")
+            hdrs = {"Authorization": f"Bearer {api_key}"}
+        else:
+            url = f"{base_url.rstrip('/')}/v1/models"
+            hdrs = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+        try:
+            resp = await client.get(url, headers=hdrs)
+            if resp.status_code == 200:
+                data = resp.json()
+                models = parse_models(data)
+                return True, models, ""
+            else:
+                return False, [], f"HTTP {resp.status_code}"
+        except Exception as e:
+            return False, [], str(e)
+
+
+@router.post("/api/providers/detect-auth")
+async def admin_detect_auth(request: Request):
+    """服务端探测 Anthropic 认证方式，用真实 key 测试"""
+    data = await request.json()
+    provider_name = data.get("provider_name", "")
+    test_model = data.get("test_model", "test")
+    p = get_registry().get_provider(provider_name)
+    if not p:
+        return {"success": False, "error": f"Provider '{provider_name}' not found"}
+    base_url = p.get_base_url("anthropic")
+    if not base_url:
+        return {"success": False, "error": "Provider 未配置 Anthropic Base URL"}
+
+    raw_url = f"{base_url.rstrip('/')}/v1/messages"
+    url = dedupe_base_url_path(base_url, raw_url)
+    body = {"model": test_model, "max_tokens": 50,
+            "messages": [{"role": "user", "content": "你是谁"}]}
+
+    async def _test_style(style: str) -> tuple[str, dict]:
+        hdrs = anthropic_headers(p, style)
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(url, json=body, headers=hdrs)
+                if resp.status_code == 200:
+                    return style, {"success": True, "status": 200}
+                else:
+                    return style, {"success": False, "status": resp.status_code,
+                                   "error": resp.text[:200]}
+        except Exception as e:
+            return style, {"success": False, "error": str(e)}
+
+    results = {}
+    for style, result in await asyncio.gather(*[_test_style(s) for s in ("bearer", "x-api-key", "auto")]):
+        results[style] = result
+
+    best = None
+    for s in ("bearer", "x-api-key", "auto"):
+        if results.get(s, {}).get("success"):
+            best = s
+            break
+
+    return {"success": best is not None, "best": best, "results": results}
+
+
+@router.post("/api/models/test")
+async def admin_test_model(request: Request):
+    """服务端用"你是谁"测试模型，返回响应内容"""
+    data = await request.json()
+    provider_name = data.get("provider_name", "")
+    model_id = data.get("model_id", "")
+    auth_style = data.get("auth_style", "auto")
+    p = get_registry().get_provider(provider_name)
+    if not p:
+        return {"success": False, "error": f"Provider '{provider_name}' not found"}
+    base_url = p.get_base_url("anthropic")
+    if not base_url:
+        return {"success": False, "error": "Provider 未配置 Anthropic Base URL"}
+
+    raw_url = f"{base_url.rstrip('/')}/v1/messages"
+    url = dedupe_base_url_path(base_url, raw_url)
+    hdrs = anthropic_headers(p, auth_style)
+    body = {"model": model_id, "max_tokens": 100,
+            "messages": [{"role": "user", "content": "你是谁"}]}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=body, headers=hdrs)
+            if resp.status_code == 200:
+                rj = resp.json()
+                text = ""
+                for c in rj.get("content", []):
+                    if c.get("type") == "text":
+                        text += c.get("text", "")
+                return {"success": True, "status": 200, "response": text[:200]}
+            else:
+                return {"success": False, "status": resp.status_code, "error": resp.text[:200]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/api/providers/{name}/test")
+async def admin_test_provider(name: str):
+    """测试提供商的连通性，分别测试 OpenAI 和 Anthropic 端点"""
+    p = get_registry().get_provider(name)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+
+    results = {}
+
+    tasks = {}
+    if p.supports_format("openai"):
+        openai_url = p.get_base_url("openai")
+        if openai_url:
+            tasks["openai"] = _test_connectivity(openai_url, p.api_key, "openai")
+    if p.supports_format("anthropic"):
+        anthropic_url = p.get_base_url("anthropic")
+        if anthropic_url:
+            tasks["anthropic"] = _test_connectivity(anthropic_url, p.api_key, "anthropic")
+
+    if tasks:
+        keys = list(tasks.keys())
+        values = await asyncio.gather(*tasks.values())
+        for k, v in zip(keys, values):
+            results[k] = v
+
+    any_success = any(r["success"] for r in results.values())
+    return {"success": any_success, "results": results}

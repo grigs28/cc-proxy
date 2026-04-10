@@ -20,7 +20,8 @@ from cc_proxy.converter import (
     sse_event,
 )
 from cc_proxy.providers import get_registry
-from cc_proxy.proxy import VERSION, app, create_app, get_stats
+from cc_proxy.proxy import VERSION, app, create_app
+from cc_proxy.stats import get as get_stats
 
 __all__ = [
     # Version
