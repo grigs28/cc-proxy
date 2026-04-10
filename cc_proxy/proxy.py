@@ -82,6 +82,22 @@ def _dedupe_base_url_path(base_url: str, target_url: str) -> str:
     return target_url
 
 
+def _build_openai_url(base_url: str, path: str) -> str:
+    """构建 OpenAI 上游 URL。如果 base_url 已包含版本路径 (/v2, /v4 等)，不再拼 /v1。
+
+    例: base="https://host/api/paas/v4", path="/v1/chat/completions"
+        → "https://host/api/paas/v4/chat/completions"
+    """
+    import re
+    stripped = base_url.rstrip("/")
+    if re.search(r"/v\d+$", stripped):
+        actual_path = re.sub(r"^/v\d+/", "/", path)
+        raw_url = stripped + actual_path
+    else:
+        raw_url = stripped + path
+    return _dedupe_base_url_path(stripped, raw_url)
+
+
 def _validate_password_strength(password: str) -> tuple[bool, str]:
     """验证密码强度
 
@@ -255,8 +271,7 @@ async def anthropic_passthrough_non_streaming(body: dict, provider: Provider, au
 async def openai_streaming(openai_req: dict, model: str, provider: Provider) -> StreamingResponse:
     """OpenAI 流式 -> Anthropic SSE"""
     base_url = provider.get_base_url("openai")
-    raw_url = f"{base_url.rstrip('/')}/v1/chat/completions"
-    url = _dedupe_base_url_path(base_url, raw_url)
+    url = _build_openai_url(base_url, "/v1/chat/completions")
 
     async def generate():
         msg_id = generate_msg_id()
@@ -359,8 +374,7 @@ async def openai_streaming(openai_req: dict, model: str, provider: Provider) -> 
 async def openai_non_streaming(openai_req: dict, model: str, provider: Provider) -> JSONResponse:
     """OpenAI 非流式 -> Anthropic JSON"""
     base_url = provider.get_base_url("openai")
-    raw_url = f"{base_url.rstrip('/')}/v1/chat/completions"
-    url = _dedupe_base_url_path(base_url, raw_url)
+    url = _build_openai_url(base_url, "/v1/chat/completions")
     for attempt in range(MAX_RETRIES):
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
             hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
@@ -540,8 +554,7 @@ async def chat_completions_endpoint(request: Request):
     try:
         if "openai" in supported:
             base_url = provider.get_base_url("openai")
-            raw_url = f"{base_url.rstrip('/')}/v1/chat/completions"
-            url = _dedupe_base_url_path(base_url, raw_url)
+            url = _build_openai_url(base_url, "/v1/chat/completions")
             hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
             if is_stream:
                 return StreamingResponse(
@@ -833,12 +846,11 @@ async def _fetch_models_from_endpoint(base_url: str, api_key: str, fmt: str) -> 
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         if fmt == "openai":
-            raw_url = f"{base_url.rstrip('/')}/v1/models"
+            url = _build_openai_url(base_url, "/v1/models")
             hdrs = {"Authorization": f"Bearer {api_key}"}
         else:
-            raw_url = f"{base_url.rstrip('/')}/v1/models"
+            url = f"{base_url.rstrip('/')}/v1/models"
             hdrs = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
-        url = _dedupe_base_url_path(base_url, raw_url)
         try:
             resp = await client.get(url, headers=hdrs)
             if resp.status_code == 200:
@@ -950,16 +962,16 @@ async def _test_connectivity(base_url: str, api_key: str, fmt: str) -> dict:
 
     if fmt == "openai":
         hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        raw_post = f"{base_url.rstrip('/')}/v1/chat/completions"
-        raw_get = f"{base_url.rstrip('/')}/v1/models"
+        post_url = _build_openai_url(base_url, "/v1/chat/completions")
+        get_url = _build_openai_url(base_url, "/v1/models")
     else:
         hdrs = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION, "Content-Type": "application/json"}
-        raw_post = f"{base_url.rstrip('/')}/v1/messages"
-        raw_get = f"{base_url.rstrip('/')}/v1/models"
+        post_url = f"{base_url.rstrip('/')}/v1/messages"
+        get_url = f"{base_url.rstrip('/')}/v1/models"
 
     # 用与实际代理相同的去重逻辑
-    post_url = _dedupe_base_url_path(base_url, raw_post)
-    get_url = _dedupe_base_url_path(base_url, raw_get)
+    post_url = _dedupe_base_url_path(base_url, post_url) if fmt != "openai" else post_url
+    get_url = _dedupe_base_url_path(base_url, get_url) if fmt != "openai" else get_url
 
     post_body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
 
