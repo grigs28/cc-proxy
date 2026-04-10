@@ -109,7 +109,8 @@ curl http://localhost:5566/v1/chat/completions \
 providers:
   - name: "Anthropic 直通"
     supported_formats: ["anthropic"]
-    base_url: "https://api.anthropic.com"
+    base_url_openai: "https://api.anthropic.com"
+    base_url_anthropic: "https://api.anthropic.com"
     api_key: "${ANTHROPIC_API_KEY}"
     models:
       - id: "claude-sonnet-4-20250514"
@@ -117,19 +118,23 @@ providers:
 
   - name: "OpenAI 中转"
     supported_formats: ["openai"]
-    base_url: "https://api.openai.com/v1"
+    base_url_openai: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
     models:
       - id: "gpt-4o"
         display_name: "GPT-4o"
 
-  - name: "Kimi"
-    supported_formats: ["openai"]
-    base_url: "https://api.moonshot.cn/v1"
+  - name: "智谱 GLM"
+    supported_formats: ["openai", "anthropic"]
+    base_url_openai: "https://open.bigmodel.cn/api/coding/paas/v4"
+    base_url_anthropic: "https://open.bigmodel.cn/api/anthropic"
+    api_key: "${GLM_API_KEY}"
     models:
-      - id: "moonshot-v1-128k"
-        display_name: "Moonshot V1 128K"
+      - id: "glm-5.1"
+        display_name: "GLM-5.1"
 ```
+
+**base_url 智能拼接**：如果 `base_url_openai` 末尾已包含版本路径（如 `/v4`、`/v2`），代理不会重复拼接 `/v1`，自动生成正确的 `/v4/chat/completions`。
 
 ### 模型级高级配置
 
@@ -311,7 +316,8 @@ Just point your client's `base_url` to `http://localhost:5566/v1`.
 providers:
   - name: "Anthropic Passthrough"
     supported_formats: ["anthropic"]
-    base_url: "https://api.anthropic.com"
+    base_url_openai: "https://api.anthropic.com"
+    base_url_anthropic: "https://api.anthropic.com"
     api_key: "${ANTHROPIC_API_KEY}"
     models:
       - id: "claude-sonnet-4-20250514"
@@ -319,19 +325,49 @@ providers:
 
   - name: "OpenAI Relay"
     supported_formats: ["openai"]
-    base_url: "https://api.openai.com/v1"
+    base_url_openai: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
     models:
       - id: "gpt-4o"
         display_name: "GPT-4o"
 
-  - name: "Kimi"
-    supported_formats: ["openai"]
-    base_url: "https://api.moonshot.cn/v1"
+  - name: "GLM"
+    supported_formats: ["openai", "anthropic"]
+    base_url_openai: "https://open.bigmodel.cn/api/coding/paas/v4"
+    base_url_anthropic: "https://open.bigmodel.cn/api/anthropic"
+    api_key: "${GLM_API_KEY}"
     models:
-      - id: "moonshot-v1-128k"
-        display_name: "Moonshot V1 128K"
+      - id: "glm-5.1"
+        display_name: "GLM-5.1"
 ```
+
+**Smart URL building**: If `base_url_openai` already ends with a version path (e.g. `/v4`, `/v2`), the proxy won't append `/v1` again — it automatically generates the correct path like `/v4/chat/completions`.
+
+### Per-Model Configuration
+
+Each model can independently configure `auth_style` (Anthropic auth method) and `strip_fields` (strip non-core fields):
+
+```yaml
+providers:
+  - name: "Kimi"
+    api_key: "${KIMI_API_KEY}"
+    supported_formats: ["openai", "anthropic"]
+    base_url_openai: "https://api.kimi.com/coding"
+    base_url_anthropic: "https://api.kimi.com/coding"
+    models:
+      - id: "kimi-for-coding"
+        display_name: "Kimi For Coding"
+        supported_formats: ["openai", "anthropic"]
+        auth_style: "bearer"        # Anthropic auth: auto/bearer/x-api-key
+        strip_fields: true          # Strip thinking, metadata etc.
+```
+
+**auth_style** — Authentication method for Anthropic passthrough:
+- `auto` (default) — Send both `x-api-key` and `Authorization: Bearer`
+- `bearer` — Only send `Authorization: Bearer`
+- `x-api-key` — Only send `x-api-key`
+
+**strip_fields** — Strip non-standard fields (e.g. `thinking`, `metadata`) that Claude Code sends, preventing 404 errors from providers that don't support them (e.g. Kimi, MiniMax).
 
 ## Format Routing
 
