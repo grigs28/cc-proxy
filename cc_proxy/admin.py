@@ -31,6 +31,31 @@ router = APIRouter()
 # 由 proxy.py 在 create_app 时设置
 proxy_port: int = 5566
 config_path: str = ".env"
+yz_sso_enabled: bool = False
+
+
+def _check_admin(request: Request):
+    """SSO 模式下检查管理员权限，非管理员返回 403"""
+    if not yz_sso_enabled:
+        return None
+    try:
+        from cc_proxy.yz_auth.session import get_session
+        session = get_session(request)
+        if not session:
+            raise HTTPException(status_code=401, detail="未登录")
+        if session.get("is_admin") != 1:
+            raise HTTPException(status_code=403, detail="需要管理员权限")
+        return session
+    except ImportError:
+        return None
+
+
+def _mask_for_viewer(data: dict) -> dict:
+    """非管理员查看时隐藏敏感字段"""
+    data_copy = dict(data)
+    if "api_key" in data_copy:
+        data_copy["api_key"] = "****"
+    return data_copy
 
 
 # ============================================================
@@ -62,16 +87,29 @@ async def _serve_admin():
 
 @router.post("/api/auth")
 async def admin_auth(request: Request):
+    if yz_sso_enabled:
+        try:
+            from cc_proxy.yz_auth.session import get_session
+            session = get_session(request)
+            if session:
+                return {"token": "sso", "user": session, "requires_password_change": False}
+        except ImportError:
+            pass
+        raise HTTPException(status_code=401, detail="SSO 模式下请通过 yz-login 登录")
     return await handle_login(request)
 
 
 @router.post("/api/auth/check")
 async def admin_check_password_required():
+    if yz_sso_enabled:
+        return {"requires_password_change": False}
     return await handle_check_password_required()
 
 
 @router.post("/api/auth/password")
 async def admin_change_password(request: Request):
+    if yz_sso_enabled:
+        raise HTTPException(status_code=400, detail="SSO 模式下不支持修改密码")
     return await handle_change_password(request)
 
 
@@ -106,20 +144,39 @@ async def admin_stats():
 # ============================================================
 
 @router.get("/api/providers")
-async def admin_list_providers():
-    return {"providers": [mask_api_key(p.to_dict()) for p in get_registry().list_providers()]}
+async def admin_list_providers(request: Request):
+    providers = [mask_api_key(p.to_dict()) for p in get_registry().list_providers()]
+    if yz_sso_enabled:
+        try:
+            from cc_proxy.yz_auth.session import get_session
+            session = get_session(request)
+            if session and session.get("is_admin") != 1:
+                providers = [_mask_for_viewer(p) for p in providers]
+        except ImportError:
+            pass
+    return {"providers": providers}
 
 
 @router.get("/api/providers/{name}")
-async def admin_get_provider(name: str):
+async def admin_get_provider(name: str, request: Request):
     p = get_registry().get_provider(name)
     if not p:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
-    return mask_api_key(p.to_dict())
+    result = mask_api_key(p.to_dict())
+    if yz_sso_enabled:
+        try:
+            from cc_proxy.yz_auth.session import get_session
+            session = get_session(request)
+            if session and session.get("is_admin") != 1:
+                result = _mask_for_viewer(result)
+        except ImportError:
+            pass
+    return result
 
 
 @router.post("/api/providers")
 async def admin_add_provider(request: Request):
+    _check_admin(request)
     data = await request.json()
     try:
         return mask_api_key(get_registry().add_provider(data).to_dict())
@@ -129,6 +186,7 @@ async def admin_add_provider(request: Request):
 
 @router.put("/api/providers/{name}")
 async def admin_update_provider(name: str, request: Request):
+    _check_admin(request)
     data = await request.json()
     r = get_registry()
     ex = r.get_provider(name)
@@ -141,7 +199,8 @@ async def admin_update_provider(name: str, request: Request):
 
 
 @router.delete("/api/providers/{name}")
-async def admin_delete_provider(name: str):
+async def admin_delete_provider(name: str, request: Request):
+    _check_admin(request)
     if not get_registry().remove_provider(name):
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
     return {"success": True}
@@ -158,6 +217,7 @@ async def admin_list_models():
 
 @router.post("/api/providers/{name}/models")
 async def admin_add_model(name: str, request: Request):
+    _check_admin(request)
     data = await request.json()
     if not data.get("id"):
         raise HTTPException(status_code=400, detail="Model 'id' is required")
@@ -219,7 +279,8 @@ async def admin_get_provider_upstream_models(name: str):
 
 
 @router.delete("/api/providers/{name}/models/{model_id}")
-async def admin_delete_model(name: str, model_id: str):
+async def admin_delete_model(name: str, model_id: str, request: Request):
+    _check_admin(request)
     r = get_registry()
     p = r.get_provider(name)
     if not p:
@@ -234,6 +295,7 @@ async def admin_delete_model(name: str, model_id: str):
 
 @router.put("/api/providers/{name}/models/{model_id}")
 async def admin_update_model(name: str, model_id: str, request: Request):
+    _check_admin(request)
     """更新模型配置"""
     r = get_registry()
     p = r.get_provider(name)
@@ -262,7 +324,8 @@ async def admin_update_model(name: str, model_id: str, request: Request):
 # ============================================================
 
 @router.post("/api/config/reload")
-async def admin_reload():
+async def admin_reload(request: Request):
+    _check_admin(request)
     reload_config()
     get_registry().reload()
     return {"success": True, "message": "Configuration reloaded"}
@@ -369,6 +432,7 @@ async def _fetch_models_from_endpoint(base_url: str, api_key: str, fmt: str) -> 
 
 @router.post("/api/providers/detect-auth")
 async def admin_detect_auth(request: Request):
+    _check_admin(request)
     """服务端探测 Anthropic 认证方式，用真实 key 测试"""
     data = await request.json()
     provider_name = data.get("provider_name", "")
@@ -413,6 +477,7 @@ async def admin_detect_auth(request: Request):
 
 @router.post("/api/models/test")
 async def admin_test_model(request: Request):
+    _check_admin(request)
     """服务端用"你是谁"测试模型，返回响应内容"""
     data = await request.json()
     provider_name = data.get("provider_name", "")
@@ -448,7 +513,8 @@ async def admin_test_model(request: Request):
 
 
 @router.post("/api/providers/{name}/test")
-async def admin_test_provider(name: str):
+async def admin_test_provider(name: str, request: Request):
+    _check_admin(request)
     """测试提供商的连通性，分别测试 OpenAI 和 Anthropic 端点"""
     p = get_registry().get_provider(name)
     if not p:

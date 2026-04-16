@@ -96,6 +96,9 @@ credentials.json
 .spec-workflow/
 .claude/
 
+# yz SSO 登录模块（不上传 git）
+cc_proxy/yz_auth/
+
 # Temporary files
 *.tmp
 *.bak

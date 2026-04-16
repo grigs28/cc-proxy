@@ -30,7 +30,7 @@ from cc_proxy.urls import build_openai_url, dedupe_base_url_path
 logger = logging.getLogger("cc-proxy")
 
 ANTHROPIC_VERSION = "2023-06-01"
-RETRY_STATUSES = {404, 429, 500, 502, 503, 529}
+RETRY_STATUSES = {400, 404, 429, 500, 502, 503, 529}
 MAX_RETRIES = 3
 
 
@@ -90,10 +90,11 @@ async def anthropic_passthrough_streaming(body: dict, provider: Provider,
                         async for chunk in resp.aiter_text():
                             chunks.append(chunk)
                         err = "".join(chunks)
-                        logger.warning(f"<- anthropic stream {resp.status_code} (attempt {attempt+1}): {err[:300]}")
                         if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                            logger.warning(f"<- anthropic stream {resp.status_code} 重试 {attempt+1}/{MAX_RETRIES}: {err[:300]}")
                             await asyncio.sleep(attempt + 1)
                             continue
+                        logger.warning(f"<- anthropic stream {resp.status_code} 重试耗尽: {err[:300]}")
                         yield (f"event: error\ndata: "
                                f"{json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': err[:500]}})}\n\n")
                         return
@@ -118,10 +119,11 @@ async def anthropic_passthrough_non_streaming(body: dict, provider: Provider,
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
             resp = await client.post(url, json=clean_body, headers=anthropic_headers(provider, auth_style, user_agent))
             if resp.status_code != 200:
-                logger.warning(f"<- anthropic {resp.status_code} (attempt {attempt+1}): {resp.text[:300]}")
                 if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                    logger.warning(f"<- anthropic {resp.status_code} 重试 {attempt+1}/{MAX_RETRIES}: {resp.text[:300]}")
                     await asyncio.sleep(attempt + 1)
                     continue
+                logger.warning(f"<- anthropic {resp.status_code} 重试耗尽: {resp.text[:300]}")
                 return JSONResponse(status_code=resp.status_code, content=resp.json())
             return JSONResponse(status_code=resp.status_code, content=resp.json())
 
@@ -157,8 +159,10 @@ async def openai_streaming(openai_req: dict, model: str, provider: Provider,
                             chunks.append(c)
                         err = "".join(chunks)
                         if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                            logger.warning(f"<- openai stream {resp.status_code} 重试 {attempt+1}/{MAX_RETRIES}: {err[:300]}")
                             await asyncio.sleep(attempt + 1)
                             continue
+                        logger.warning(f"<- openai stream {resp.status_code} 重试耗尽: {err[:300]}")
                         try:
                             eb = json.loads(err)
                         except Exception:
@@ -249,10 +253,11 @@ async def openai_non_streaming(openai_req: dict, model: str, provider: Provider,
                 hdrs["User-Agent"] = user_agent
             resp = await client.post(url, json=openai_req, headers=hdrs)
             if resp.status_code != 200:
-                logger.warning(f"<- openai {resp.status_code} (attempt {attempt+1}): {resp.text[:300]}")
                 if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                    logger.warning(f"<- openai {resp.status_code} 重试 {attempt+1}/{MAX_RETRIES}: {resp.text[:300]}")
                     await asyncio.sleep(attempt + 1)
                     continue
+                logger.warning(f"<- openai {resp.status_code} 重试耗尽: {resp.text[:300]}")
                 try:
                     eb = resp.json()
                 except Exception:
@@ -287,10 +292,11 @@ async def openai_to_anthropic_non_streaming(anthropic_req: dict, model: str, pro
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
             resp = await client.post(url, json=clean_body, headers=anthropic_headers(provider, auth_style, user_agent))
             if resp.status_code != 200:
-                logger.warning(f"<- anthropic {resp.status_code} (attempt {attempt+1}): {resp.text[:300]}")
                 if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                    logger.warning(f"<- anthropic {resp.status_code} 重试 {attempt+1}/{MAX_RETRIES}: {resp.text[:300]}")
                     await asyncio.sleep(attempt + 1)
                     continue
+                logger.warning(f"<- anthropic {resp.status_code} 重试耗尽: {resp.text[:300]}")
                 return JSONResponse(status_code=resp.status_code, content=resp.json())
             anthropic_resp = resp.json()
             openai_resp = reverse_convert_response(anthropic_resp)
@@ -315,10 +321,11 @@ async def stream_openai(url: str, hdrs: dict, body: dict, provider: Provider,
                     async for chunk in resp.aiter_text():
                         chunks.append(chunk)
                     err = "".join(chunks)
-                    logger.warning(f"<- openai stream {resp.status_code} (attempt {attempt+1}): {err[:300]}")
                     if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                        logger.warning(f"<- openai stream {resp.status_code} 重试 {attempt+1}/{MAX_RETRIES}: {err[:300]}")
                         await asyncio.sleep(attempt + 1)
                         continue
+                    logger.warning(f"<- openai stream {resp.status_code} 重试耗尽: {err[:300]}")
                     yield f"data: {json.dumps({'error': {'message': err, 'type': 'api_error'}})}\n\n"
                     return
                 async for chunk in resp.aiter_bytes():

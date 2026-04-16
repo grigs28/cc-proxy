@@ -5,7 +5,6 @@ services:
       dockerfile: docker/Dockerfile
     ports:
       - "5566:5566"
-      - "5567:5566"
     environment:
       - CC_PORT=5566
       - CC_LOG_DIR=/app/log

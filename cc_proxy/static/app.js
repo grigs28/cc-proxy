@@ -958,3 +958,33 @@
         }
 
         // --- 初始化由认证流程触发 ---
+
+        // --- SSO 自动登录 ---
+        if (window.location.search.indexOf('sso=1') !== -1) {
+            fetch(API_BASE + '/yz/user')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.ok) {
+                        authToken = 'sso';
+                        sessionStorage.setItem('ccProxyToken', authToken);
+                        window.history.replaceState(null, '', '/');
+                        showApp();
+                        showToast('欢迎，' + data.display_name, 'success');
+                    } else {
+                        showToast('SSO 登录失败，请重试', 'error');
+                    }
+                })
+                .catch(function(err) { showToast('SSO 认证异常', 'error'); });
+        } else if (!authToken) {
+            // 非 SSO 且无 token，检查是否有 SSO cookie（直接访问场景）
+            fetch(API_BASE + '/yz/user', { credentials: 'same-origin' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.ok) {
+                        authToken = 'sso';
+                        sessionStorage.setItem('ccProxyToken', authToken);
+                        showApp();
+                    }
+                })
+                .catch(function() {});
+        }

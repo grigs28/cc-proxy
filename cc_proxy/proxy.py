@@ -52,8 +52,14 @@ def _find_model(model_id: str):
 
 app = FastAPI(title="cc-proxy", version=VERSION)
 app.mount("/static", StaticFiles(directory=Path(os.path.dirname(__file__)) / "static"), name="static")
-app.middleware("http")(auth_middleware)
 app.include_router(admin_router)
+
+# 条件加载 yz-login SSO 路由（必须在 catch-all 之前注册）
+try:
+    from cc_proxy.yz_auth import router as yz_router
+    app.include_router(yz_router)
+except ImportError:
+    pass
 
 
 @app.get("/health")
@@ -190,7 +196,7 @@ async def chat_completions_endpoint(request: Request):
             }})
 
 
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+# catch-all 放在 create_app 中注册，确保在所有路由之后
 async def catch_all(request: Request, path: str):
     logger.warning(f"-> unhandled {request.method} /{path}")
     return JSONResponse(status_code=404, content={
@@ -217,5 +223,24 @@ def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
 
     if not is_default_password():
         set_password_change_required(False)
+
+    # 条件加载 yz-login SSO 认证
+    _yz_sso_loaded = False
+    try:
+        from cc_proxy.yz_auth import is_enabled, router as yz_router, middleware as yz_middleware
+        if is_enabled():
+            logger.info("YZ SSO 登录已启用")
+            app.include_router(yz_router)
+            app.middleware("http")(yz_middleware)
+            admin_module.yz_sso_enabled = True
+            _yz_sso_loaded = True
+    except ImportError:
+        logger.info("yz_auth 模块未找到，使用默认密码认证")
+
+    if not _yz_sso_loaded:
+        app.middleware("http")(auth_middleware)
+
+    # catch-all 必须最后注册
+    app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])(catch_all)
 
     return app
