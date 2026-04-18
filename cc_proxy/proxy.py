@@ -22,7 +22,7 @@ from cc_proxy.client import (
     openai_to_anthropic_streaming,
     stream_openai,
 )
-from cc_proxy.config import get_model_map, init_config, is_default_password
+from cc_proxy.config import get_config, get_model_map, init_config, is_default_password
 from cc_proxy.converter import convert_request, reverse_convert_request
 from cc_proxy.providers import get_registry
 from cc_proxy.stats import increment as inc_stats
@@ -30,7 +30,16 @@ from cc_proxy.urls import build_openai_url
 
 logger = logging.getLogger("cc-proxy")
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
+
+# 通用透传端点列表（可通过 .env server.passthrough_paths 扩展）
+_DEFAULT_PASSTHROUGH_PATHS = [
+    "/v1/embeddings",
+    "/v1/rerank", "/rerank", "/v2/rerank",
+    "/v1/score", "/score",
+    "/v1/completions",
+    "/classify", "/pooling",
+]
 
 
 def _find_model(model_id: str):
@@ -196,6 +205,51 @@ async def chat_completions_endpoint(request: Request):
             }})
 
 
+# ============================================================
+# 通用 API 透传（embeddings / rerank / score 等）
+# ============================================================
+
+async def _generic_passthrough(request: Request):
+    """通用 API 透传：按 model 路由到 provider，原样转发请求和响应"""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": {"message": "Invalid JSON body"}})
+
+    model = body.get("model", "")
+    if not model:
+        return JSONResponse(status_code=400, content={"error": {"message": "model field required"}})
+
+    provider, _ = _find_model(model)
+    if not provider:
+        return JSONResponse(status_code=404, content={
+            "error": {"message": f"Model '{model}' not found in any configured provider",
+                      "type": "model_not_found"}})
+
+    path = request.url.path
+    base_url = provider.get_base_url("openai") or provider.get_base_url("anthropic")
+    if not base_url:
+        return JSONResponse(status_code=500, content={"error": {"message": f"Provider '{provider.name}' has no base_url"}})
+
+    url = f"{base_url.rstrip('/')}{path}"
+    hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
+    ua = request.headers.get("User-Agent", "")
+    if ua:
+        hdrs["User-Agent"] = ua
+
+    logger.info(f"-> [passthrough] {path} model={model} provider={provider.name}")
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
+            resp = await client.post(url, json=body, headers=hdrs)
+            logger.info(f"<- [passthrough] {resp.status_code} {path}")
+            return JSONResponse(status_code=resp.status_code, content=resp.json())
+    except httpx.ConnectError:
+        return JSONResponse(status_code=529, content={"error": {"message": f"Failed to connect to provider '{provider.name}'"}})
+    except httpx.TimeoutException:
+        return JSONResponse(status_code=529, content={"error": {"message": f"Upstream to '{provider.name}' timed out"}})
+
+
 # catch-all 放在 create_app 中注册，确保在所有路由之后
 async def catch_all(request: Request, path: str):
     logger.warning(f"-> unhandled {request.method} /{path}")
@@ -239,6 +293,14 @@ def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
 
     if not _yz_sso_loaded:
         app.middleware("http")(auth_middleware)
+
+    # 注册通用透传路由
+    cfg = get_config()
+    extra_paths = cfg.get("server", {}).get("passthrough_paths", [])
+    all_paths = _DEFAULT_PASSTHROUGH_PATHS + extra_paths
+    for p in all_paths:
+        app.add_api_route(p, _generic_passthrough, methods=["POST"])
+    logger.info(f"已注册 {len(all_paths)} 个透传端点: {all_paths}")
 
     # catch-all 必须最后注册
     app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])(catch_all)

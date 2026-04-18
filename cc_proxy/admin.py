@@ -19,7 +19,7 @@ from cc_proxy.client import (
     ANTHROPIC_VERSION,
     anthropic_headers,
 )
-from cc_proxy.config import get_server_config, reload_config
+from cc_proxy.config import get_server_config, get_settings, reload_config, save_settings
 from cc_proxy.providers import Model, get_registry
 from cc_proxy.stats import get as get_stats
 from cc_proxy.urls import build_openai_url, dedupe_base_url_path, mask_api_key
@@ -329,6 +329,41 @@ async def admin_reload(request: Request):
     reload_config()
     get_registry().reload()
     return {"success": True, "message": "Configuration reloaded"}
+
+
+# ============================================================
+# 系统配置管理
+# ============================================================
+
+@router.get("/api/settings")
+async def admin_get_settings(request: Request):
+    """获取系统配置"""
+    _check_admin(request)
+    return get_settings()
+
+
+@router.put("/api/settings")
+async def admin_save_settings(request: Request):
+    """保存系统配置"""
+    _check_admin(request)
+    data = await request.json()
+    save_settings(data)
+    reload_config()
+    get_registry().reload()
+    return {"success": True, "message": "配置已保存并重载"}
+
+
+@router.get("/api/settings/paths")
+async def admin_get_passthrough_paths(request: Request):
+    """获取所有透传路径（默认 + 自定义）"""
+    from cc_proxy.proxy import _DEFAULT_PASSTHROUGH_PATHS
+    cfg = get_settings()
+    extra = cfg.get("server", {}).get("passthrough_paths", [])
+    return {
+        "default_paths": _DEFAULT_PASSTHROUGH_PATHS,
+        "custom_paths": extra,
+        "all_paths": _DEFAULT_PASSTHROUGH_PATHS + extra,
+    }
 
 
 # ============================================================

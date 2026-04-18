@@ -50,6 +50,7 @@
                 <button class="nav-tab active" data-tab="dashboard">仪表板</button>
                 <button class="nav-tab" data-tab="providers">提供商</button>
                 <button class="nav-tab" data-tab="models">模型</button>
+                <button class="nav-tab" data-tab="settings">系统配置</button>
             </div>
         </nav>
 
@@ -163,6 +164,106 @@
                             <p>暂无模型</p>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- 系统配置 -->
+            <div id="settings-tab" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>服务器配置</h2>
+                    </div>
+                    <div class="card-body">
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+                            <div class="form-group">
+                                <label>监听地址</label>
+                                <input type="text" id="settings-host" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                            </div>
+                            <div class="form-group">
+                                <label>监听端口</label>
+                                <input type="number" id="settings-port" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top:1rem">
+                    <div class="card-header">
+                        <h2>API 透传路径</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label>内置路径（只读）</label>
+                            <div id="settings-default-paths" style="display:flex;flex-wrap:wrap;gap:0.5rem"></div>
+                        </div>
+                        <div class="form-group">
+                            <label>自定义路径</label>
+                            <div id="settings-custom-paths" style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem"></div>
+                            <div style="display:flex;gap:0.5rem">
+                                <input type="text" id="settings-new-path" placeholder="例如: /v1/audio/transcriptions" style="flex:1;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                                <button class="btn btn-primary btn-sm" onclick="addPassthroughPath()">添加</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top:1rem">
+                    <div class="card-header">
+                        <h2>SSO 登录配置</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label><input type="checkbox" id="settings-yz-enabled" style="width:18px;height:18px;vertical-align:middle;margin-right:4px"> 启用 SSO 登录</label>
+                        </div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+                            <div class="form-group">
+                                <label>SSO 登录地址</label>
+                                <input type="text" id="settings-yz-url" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                            </div>
+                            <div class="form-group">
+                                <label>回调地址</label>
+                                <input type="text" id="settings-yz-callback" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin-top:0.5rem">
+                            <label>内置白名单（只读）</label>
+                            <div id="settings-builtin-paths" style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.75rem"></div>
+                        </div>
+                        <div class="form-group">
+                            <label>自定义白名单路径（无需登录即可访问）</label>
+                            <div id="settings-public-paths" style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem"></div>
+                            <div style="display:flex;gap:0.5rem">
+                                <input type="text" id="settings-new-public-path" placeholder="例如: /docs" style="flex:1;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                                <button class="btn btn-primary btn-sm" onclick="addPublicPath()">添加</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top:1rem">
+                    <div class="card-header">
+                        <h2>模型映射</h2>
+                    </div>
+                    <div class="card-body">
+                        <div id="settings-model-map" style="margin-bottom:0.5rem"></div>
+                        <div style="display:flex;gap:0.5rem">
+                            <input type="text" id="settings-map-from" placeholder="源模型名" style="flex:1;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                            <span style="line-height:2.2;color:var(--text-secondary)">→</span>
+                            <input type="text" id="settings-map-to" placeholder="目标模型名" style="flex:1;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                            <button class="btn btn-primary btn-sm" onclick="addModelMap()">添加</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top:1rem;text-align:right">
+                    <button class="btn btn-primary" onclick="saveAllSettings()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                            <polyline points="17 21 17 13 7 13 7 21"/>
+                            <polyline points="7 3 7 8 15 8"/>
+                        </svg>
+                        保存配置
+                    </button>
                 </div>
             </div>
         </main>

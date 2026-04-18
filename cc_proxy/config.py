@@ -184,6 +184,45 @@ def get_model_map() -> dict[str, str]:
     return cfg.get("model_map", {})
 
 
+def get_settings() -> dict[str, Any]:
+    """获取系统配置（脱敏，不含 providers 和 api_key）"""
+    cfg = get_config()
+    server = cfg.get("server", {"host": "0.0.0.0", "port": 5566})
+    return {
+        "server": {
+            "host": server.get("host", "0.0.0.0"),
+            "port": server.get("port", 5566),
+            "passthrough_paths": server.get("passthrough_paths", []),
+        },
+        "sso_public_paths": cfg.get("sso_public_paths", []),
+        "sso_builtin_paths": ["/static/*", "/health", "/api/yz/callback", "/api/yz/logout", "/api/yz/user"],
+        "yz_login_enabled": cfg.get("yz_login_enabled", False),
+        "yz_login_url": cfg.get("yz_login_url", ""),
+        "cc_proxy_callback_url": cfg.get("cc_proxy_callback_url", ""),
+        "model_map": cfg.get("model_map", {}),
+    }
+
+
+def save_settings(settings: dict[str, Any]) -> None:
+    """保存系统配置（合并到现有配置，保留 providers 等不变）"""
+    cfg = get_config()
+    # 合并 server 配置
+    if "server" not in cfg:
+        cfg["server"] = {}
+    srv = settings.get("server", {})
+    if "host" in srv:
+        cfg["server"]["host"] = srv["host"]
+    if "port" in srv:
+        cfg["server"]["port"] = srv["port"]
+    if "passthrough_paths" in srv:
+        cfg["server"]["passthrough_paths"] = srv["passthrough_paths"]
+    # 合并其他配置
+    for key in ("yz_login_enabled", "yz_login_url", "cc_proxy_callback_url", "model_map", "sso_public_paths"):
+        if key in settings:
+            cfg[key] = settings[key]
+    save_config(cfg)
+
+
 def get_provider_for_model_legacy(model_id: str) -> dict[str, Any] | None:
     """兼容旧的单 upstream 模式"""
     cfg = get_config()

@@ -121,6 +121,7 @@
                 if (tab.dataset.tab === 'providers') loadProviders();
                 if (tab.dataset.tab === 'models') { loadModels(); }
                 if (tab.dataset.tab === 'dashboard') loadDashboard();
+                if (tab.dataset.tab === 'settings') loadSettings();
             });
         });
 
@@ -953,6 +954,194 @@
             .then(function(r) {
                 if (r.ok) { showToast('密码已修改，请重新登录'); closeChangePassword(); document.getElementById('app').style.display = 'none'; document.getElementById('login-overlay').style.display = 'flex'; sessionStorage.removeItem('authToken'); }
                 else { return r.json().then(function(e) { throw new Error(e.detail || '修改失败'); }); }
+            })
+            .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
+        // --- 系统配置 ---
+
+        var _settingsCustomPaths = [];
+        var _settingsPublicPaths = [];
+        var _settingsModelMap = {};
+
+        function _makeTag(text, removable, onRemove) {
+            var tag = document.createElement('span');
+            tag.style.cssText = 'padding:0.3rem 0.5rem;border-radius:6px;font-size:0.85rem;display:inline-flex;align-items:center;gap:0.3rem';
+            tag.textContent = text;
+            if (removable) {
+                tag.style.cssText += ';background:rgba(124,92,255,0.15);color:var(--accent);border:1px solid rgba(124,92,255,0.3)';
+                var btn = document.createElement('button');
+                btn.style.cssText = 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:0 2px';
+                btn.textContent = '\u00d7';
+                btn.onclick = onRemove;
+                tag.appendChild(btn);
+            } else {
+                tag.style.cssText += ';background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border)';
+            }
+            return tag;
+        }
+
+        function loadSettings() {
+            api('/settings')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    document.getElementById('settings-host').value = (data.server && data.server.host) || '0.0.0.0';
+                    document.getElementById('settings-port').value = (data.server && data.server.port) || 5566;
+                    document.getElementById('settings-yz-enabled').checked = !!data.yz_login_enabled;
+                    document.getElementById('settings-yz-url').value = data.yz_login_url || '';
+                    document.getElementById('settings-yz-callback').value = data.cc_proxy_callback_url || '';
+                    _settingsCustomPaths = ((data.server && data.server.passthrough_paths) || []).slice();
+                    _settingsPublicPaths = (data.sso_public_paths || []).slice();
+                    _settingsModelMap = {};
+                    var mm = data.model_map || {};
+                    Object.keys(mm).forEach(function(k) { _settingsModelMap[k] = mm[k]; });
+                    renderCustomPaths();
+                    renderPublicPaths();
+                    renderModelMap();
+                    // 显示内置 SSO 白名单
+                    var builtinContainer = document.getElementById('settings-builtin-paths');
+                    if (builtinContainer) {
+                        builtinContainer.textContent = '';
+                        (data.sso_builtin_paths || []).forEach(function(p) {
+                            builtinContainer.appendChild(_makeTag(p, false));
+                        });
+                    }
+                })
+                .catch(function() { showToast('加载配置失败', 'error'); });
+
+            api('/settings/paths')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var container = document.getElementById('settings-default-paths');
+                    container.textContent = '';
+                    (data.default_paths || []).forEach(function(p) {
+                        container.appendChild(_makeTag(p, false));
+                    });
+                });
+        }
+
+        function renderCustomPaths() {
+            var container = document.getElementById('settings-custom-paths');
+            container.textContent = '';
+            if (_settingsCustomPaths.length === 0) {
+                var empty = document.createElement('span');
+                empty.style.cssText = 'color:var(--text-secondary);font-size:0.85rem';
+                empty.textContent = '暂无自定义路径';
+                container.appendChild(empty);
+                return;
+            }
+            _settingsCustomPaths.forEach(function(p, i) {
+                container.appendChild(_makeTag(p, true, function() {
+                    _settingsCustomPaths.splice(i, 1); renderCustomPaths();
+                }));
+            });
+        }
+
+        function addPassthroughPath() {
+            var input = document.getElementById('settings-new-path');
+            var val = input.value.trim();
+            if (!val) return;
+            if (!val.startsWith('/')) { showToast('路径必须以 / 开头', 'error'); return; }
+            if (_settingsCustomPaths.indexOf(val) !== -1) { showToast('路径已存在', 'error'); return; }
+            _settingsCustomPaths.push(val);
+            input.value = '';
+            renderCustomPaths();
+        }
+
+        function renderPublicPaths() {
+            var container = document.getElementById('settings-public-paths');
+            container.textContent = '';
+            if (_settingsPublicPaths.length === 0) {
+                var empty = document.createElement('span');
+                empty.style.cssText = 'color:var(--text-secondary);font-size:0.85rem';
+                empty.textContent = '暂无白名单路径';
+                container.appendChild(empty);
+                return;
+            }
+            _settingsPublicPaths.forEach(function(p, i) {
+                container.appendChild(_makeTag(p, true, function() {
+                    _settingsPublicPaths.splice(i, 1); renderPublicPaths();
+                }));
+            });
+        }
+
+        function addPublicPath() {
+            var input = document.getElementById('settings-new-public-path');
+            var val = input.value.trim();
+            if (!val) return;
+            if (_settingsPublicPaths.indexOf(val) !== -1) { showToast('路径已存在', 'error'); return; }
+            _settingsPublicPaths.push(val);
+            input.value = '';
+            renderPublicPaths();
+        }
+
+        function renderModelMap() {
+            var container = document.getElementById('settings-model-map');
+            container.textContent = '';
+            var keys = Object.keys(_settingsModelMap);
+            if (keys.length === 0) {
+                var empty = document.createElement('span');
+                empty.style.cssText = 'color:var(--text-secondary);font-size:0.85rem';
+                empty.textContent = '暂无模型映射';
+                container.appendChild(empty);
+                return;
+            }
+            keys.forEach(function(from) {
+                var row = document.createElement('div');
+                row.style.cssText = 'display:flex;align-items:center;gap:0.5rem;margin-bottom:0.4rem';
+                var fromSpan = document.createElement('span');
+                fromSpan.style.cssText = 'color:var(--text-primary);min-width:120px';
+                fromSpan.textContent = from;
+                var arrow = document.createElement('span');
+                arrow.style.cssText = 'color:var(--text-secondary)';
+                arrow.textContent = '\u2192';
+                var toSpan = document.createElement('span');
+                toSpan.style.cssText = 'color:var(--accent);min-width:120px';
+                toSpan.textContent = _settingsModelMap[from];
+                var btn = document.createElement('button');
+                btn.className = 'btn btn-danger btn-sm';
+                btn.style.cssText = 'padding:0.2rem 0.5rem;font-size:0.75rem';
+                btn.textContent = '删除';
+                btn.onclick = function() { delete _settingsModelMap[from]; renderModelMap(); };
+                row.appendChild(fromSpan);
+                row.appendChild(arrow);
+                row.appendChild(toSpan);
+                row.appendChild(btn);
+                container.appendChild(row);
+            });
+        }
+
+        function addModelMap() {
+            var from = document.getElementById('settings-map-from').value.trim();
+            var to = document.getElementById('settings-map-to').value.trim();
+            if (!from || !to) { showToast('请填写源模型和目标模型', 'error'); return; }
+            _settingsModelMap[from] = to;
+            document.getElementById('settings-map-from').value = '';
+            document.getElementById('settings-map-to').value = '';
+            renderModelMap();
+        }
+
+        function saveAllSettings() {
+            var data = {
+                server: {
+                    host: document.getElementById('settings-host').value.trim(),
+                    port: parseInt(document.getElementById('settings-port').value) || 5566,
+                    passthrough_paths: _settingsCustomPaths,
+                },
+                sso_public_paths: _settingsPublicPaths,
+                yz_login_enabled: document.getElementById('settings-yz-enabled').checked,
+                yz_login_url: document.getElementById('settings-yz-url').value.trim(),
+                cc_proxy_callback_url: document.getElementById('settings-yz-callback').value.trim(),
+                model_map: _settingsModelMap,
+            };
+            api('/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(function(r) {
+                if (r.ok) { showToast('配置已保存并重载'); }
+                else { return r.json().then(function(e) { throw new Error(e.detail || '保存失败'); }); }
             })
             .catch(function(err) { showToast(err.message, 'error'); });
         }
