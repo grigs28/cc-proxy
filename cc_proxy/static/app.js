@@ -52,6 +52,11 @@
         }
 
         function logout() {
+            if (authToken === 'sso') {
+                // SSO 模式：跳转到后端退出接口清除 session cookie
+                window.location.href = '/api/yz/logout';
+                return;
+            }
             sessionStorage.removeItem('ccProxyToken');
             authToken = null;
             document.getElementById('app').style.display = 'none';
@@ -122,6 +127,9 @@
                 if (tab.dataset.tab === 'models') { loadModels(); }
                 if (tab.dataset.tab === 'dashboard') loadDashboard();
                 if (tab.dataset.tab === 'settings') loadSettings();
+                // 保存配置按钮只在系统配置 tab 显示
+                var btnSave = document.getElementById('btn-save-settings');
+                if (btnSave) btnSave.style.display = tab.dataset.tab === 'settings' ? '' : 'none';
             });
         });
 
@@ -143,6 +151,78 @@
                 .catch(function(err) { showToast('加载仪表板失败: ' + err.message, 'error'); });
         }
 
+        // --- 分页 ---
+
+        var _pgProviders = { page: 1, size: 20, total: 0 };
+        var _pgModels = { page: 1, size: 20, total: 0 };
+
+        function _renderPagination(containerId, pg, onPageChange, onSizeChange) {
+            var el = document.getElementById(containerId);
+            if (!el) return;
+            el.textContent = '';
+            var totalPages = Math.max(1, Math.ceil(pg.total / pg.size));
+            if (pg.page > totalPages) pg.page = totalPages;
+
+            var from = pg.total === 0 ? 0 : (pg.page - 1) * pg.size + 1;
+            var to = Math.min(pg.page * pg.size, pg.total);
+
+            // 条数信息
+            var countSpan = document.createElement('span');
+            countSpan.textContent = '\u5171 ' + pg.total + ' \u6761';
+            el.appendChild(countSpan);
+
+            // 每页选择
+            var sizeWrap = document.createElement('span');
+            sizeWrap.className = 'pg-info';
+            var sizeLabel = document.createElement('span');
+            sizeLabel.textContent = '\u6bcf\u9875';
+            sizeWrap.appendChild(sizeLabel);
+            var sizeSelect = document.createElement('select');
+            sizeSelect.className = 'pg-size-select';
+            [10, 20, 50, 100].forEach(function(n) {
+                var opt = document.createElement('option');
+                opt.value = n;
+                opt.textContent = n;
+                if (n === pg.size) opt.selected = true;
+                sizeSelect.appendChild(opt);
+            });
+            sizeSelect.onchange = function() { onSizeChange(parseInt(this.value)); };
+            sizeWrap.appendChild(sizeSelect);
+            sizeWrap.appendChild(document.createTextNode('\u6761'));
+            el.appendChild(sizeWrap);
+
+            // 翻页按钮
+            var pages = document.createElement('div');
+            pages.className = 'pg-pages';
+
+            var btnPrev = document.createElement('button');
+            btnPrev.className = 'pg-btn';
+            btnPrev.textContent = '\u2039';
+            btnPrev.disabled = pg.page <= 1;
+            btnPrev.onclick = function() { onPageChange(pg.page - 1); };
+            pages.appendChild(btnPrev);
+
+            var start = Math.max(1, pg.page - 2);
+            var end = Math.min(totalPages, start + 4);
+            start = Math.max(1, end - 4);
+            for (var i = start; i <= end; i++) {
+                var btn = document.createElement('button');
+                btn.className = 'pg-btn' + (i === pg.page ? ' pg-active' : '');
+                btn.textContent = i;
+                btn.onclick = (function(p) { return function() { onPageChange(p); }; })(i);
+                pages.appendChild(btn);
+            }
+
+            var btnNext = document.createElement('button');
+            btnNext.className = 'pg-btn';
+            btnNext.textContent = '\u203a';
+            btnNext.disabled = pg.page >= totalPages;
+            btnNext.onclick = function() { onPageChange(pg.page + 1); };
+            pages.appendChild(btnNext);
+
+            el.appendChild(pages);
+        }
+
         // --- 提供商管理 ---
 
         function loadProviders() {
@@ -154,16 +234,22 @@
                     tbody.innerHTML = '';
 
                     var providers = data.providers || [];
+                    _pgProviders.total = providers.length;
+
                     if (providers.length === 0) {
                         empty.style.display = 'block';
                         document.getElementById('providers-table').style.display = 'none';
+                        document.getElementById('providers-pagination').textContent = '';
                         return;
                     }
 
                     empty.style.display = 'none';
                     document.getElementById('providers-table').style.display = '';
 
-                    providers.forEach(function(p) {
+                    var start = (_pgProviders.page - 1) * _pgProviders.size;
+                    var pageItems = providers.slice(start, start + _pgProviders.size);
+
+                    pageItems.forEach(function(p) {
                         var tr = document.createElement('tr');
                         var safeName = escapeAttr(p.name);
                         var modelCount = (p.models || []).length;
@@ -188,6 +274,10 @@
                             '</div></td>';
                         tbody.appendChild(tr);
                     });
+                    _renderPagination('providers-pagination', _pgProviders,
+                        function(p) { _pgProviders.page = p; loadProviders(); },
+                        function(s) { _pgProviders.size = Math.min(s, 100); _pgProviders.page = 1; loadProviders(); }
+                    );
                 })
                 .catch(function(err) { showToast('加载提供商失败: ' + err.message, 'error'); });
         }
@@ -461,16 +551,22 @@
                     tbody.innerHTML = '';
 
                     var models = data.models || [];
+                    _pgModels.total = models.length;
+
                     if (models.length === 0) {
                         empty.style.display = 'block';
                         document.getElementById('models-table').style.display = 'none';
+                        document.getElementById('models-pagination').textContent = '';
                         return;
                     }
 
                     empty.style.display = 'none';
                     document.getElementById('models-table').style.display = '';
 
-                    models.forEach(function(m) {
+                    var start = (_pgModels.page - 1) * _pgModels.size;
+                    var pageItems = models.slice(start, start + _pgModels.size);
+
+                    pageItems.forEach(function(m) {
                         var tr = document.createElement('tr');
                         var pfmts = providerFmts[m.provider_name] || ['openai', 'anthropic'];
                         var fmts = m.supported_formats || pfmts;
@@ -503,6 +599,10 @@
                             '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button> <button class="btn btn-secondary btn-sm" onclick="editModel(\'' + safeName + '\',\'' + safeId + '\',\'' + escapeAttr(m.display_name || m.id) + '\',\'' + fmts.join(',') + '\',\'' + (m.auth_style || 'auto') + '\',' + (m.strip_fields ? 'true' : 'false') + ')">编辑</button> <button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + safeName + '\',\'' + safeId + '\')">删除</button></td>';
                         tbody.appendChild(tr);
                     });
+                    _renderPagination('models-pagination', _pgModels,
+                        function(p) { _pgModels.page = p; loadModels(); },
+                        function(s) { _pgModels.size = Math.min(s, 100); _pgModels.page = 1; loadModels(); }
+                    );
                 })
                 .catch(function(err) { showToast('加载模型失败: ' + err.message, 'error'); });
         }
@@ -976,7 +1076,7 @@
                 btn.onclick = onRemove;
                 tag.appendChild(btn);
             } else {
-                tag.style.cssText += ';background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border)';
+                tag.style.cssText += ';background:var(--bg-elevated);color:var(--text-primary);border:1px solid var(--border)';
             }
             return tag;
         }
@@ -1025,7 +1125,7 @@
             container.textContent = '';
             if (_settingsCustomPaths.length === 0) {
                 var empty = document.createElement('span');
-                empty.style.cssText = 'color:var(--text-secondary);font-size:0.85rem';
+                empty.style.cssText = 'color:var(--text-primary);font-size:0.85rem';
                 empty.textContent = '暂无自定义路径';
                 container.appendChild(empty);
                 return;
@@ -1053,7 +1153,7 @@
             container.textContent = '';
             if (_settingsPublicPaths.length === 0) {
                 var empty = document.createElement('span');
-                empty.style.cssText = 'color:var(--text-secondary);font-size:0.85rem';
+                empty.style.cssText = 'color:var(--text-primary);font-size:0.85rem';
                 empty.textContent = '暂无白名单路径';
                 container.appendChild(empty);
                 return;
@@ -1081,7 +1181,7 @@
             var keys = Object.keys(_settingsModelMap);
             if (keys.length === 0) {
                 var empty = document.createElement('span');
-                empty.style.cssText = 'color:var(--text-secondary);font-size:0.85rem';
+                empty.style.cssText = 'color:var(--text-primary);font-size:0.85rem';
                 empty.textContent = '暂无模型映射';
                 container.appendChild(empty);
                 return;

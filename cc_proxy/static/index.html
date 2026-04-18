@@ -52,6 +52,14 @@
                 <button class="nav-tab" data-tab="models">模型</button>
                 <button class="nav-tab" data-tab="settings">系统配置</button>
             </div>
+            <button class="btn btn-primary btn-sm" id="btn-save-settings" style="display:none" onclick="saveAllSettings()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                    <polyline points="17 21 17 13 7 13 7 21"/>
+                    <polyline points="7 3 7 8 15 8"/>
+                </svg>
+                保存配置
+            </button>
         </nav>
 
         <main>
@@ -130,6 +138,7 @@
                         <div id="providers-empty" class="empty-state" style="display: none">
                             <p>暂无提供商，请点击"添加提供商"按钮添加</p>
                         </div>
+                        <div id="providers-pagination" class="pagination-bar"></div>
                     </div>
                 </div>
             </div>
@@ -163,6 +172,7 @@
                         <div id="models-empty" class="empty-state" style="display: none">
                             <p>暂无模型</p>
                         </div>
+                        <div id="models-pagination" class="pagination-bar"></div>
                     </div>
                 </div>
             </div>
@@ -253,17 +263,6 @@
                             <button class="btn btn-primary btn-sm" onclick="addModelMap()">添加</button>
                         </div>
                     </div>
-                </div>
-
-                <div style="margin-top:1rem;text-align:right">
-                    <button class="btn btn-primary" onclick="saveAllSettings()">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-                            <polyline points="17 21 17 13 7 13 7 21"/>
-                            <polyline points="7 3 7 8 15 8"/>
-                        </svg>
-                        保存配置
-                    </button>
                 </div>
             </div>
         </main>
