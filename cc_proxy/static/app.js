@@ -49,6 +49,18 @@
             document.getElementById('login-overlay').classList.add('hidden');
             document.getElementById('app').style.display = '';
             loadDashboard();
+            // 尝试获取当前用户名
+            if (authToken === 'sso') {
+                fetch(API_BASE + '/yz/user')
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (data.ok) {
+                            var el = document.getElementById('current-user');
+                            if (el) el.textContent = '当前登录：' + data.display_name + (data.is_admin ? ' (管理员)' : ' (查看者)');
+                        }
+                    })
+                    .catch(function() {});
+            }
         }
 
         function logout() {
@@ -592,11 +604,12 @@
                         tr.innerHTML =
                             '<td><input type="checkbox" class="model-checkbox" data-model-id="' + escapeHtml(m.id) + '" data-provider="' + escapeHtml(m.provider_name) + '"></td>' +
                             '<td><code>' + escapeHtml(m.id) + '</code></td>' +
+                            '<td>' + (m.alias ? '<code style="background:var(--accent-dim);border-color:rgba(124,92,255,0.2);color:var(--accent-hover)">' + escapeHtml(m.alias) + '</code>' : '<span style="color:var(--text-muted)">-</span>') + '</td>' +
                             '<td>' + escapeHtml(m.display_name) + '</td>' +
                             '<td><span class="badge badge-primary">' + escapeHtml(m.provider_name) + '</span></td>' +
                             '<td><span class="badge" style="background:' + typeColor + '">' + typeLabel + '</span></td>' +
                             '<td><span class="status-indicator" id="model-status-' + safeId.replace(/[^a-zA-Z0-9]/g, '_') + '"><span class="status-dot" style="background:var(--text-secondary)"></span></span></td>' +
-                            '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button> <button class="btn btn-secondary btn-sm" onclick="editModel(\'' + safeName + '\',\'' + safeId + '\',\'' + escapeAttr(m.display_name || m.id) + '\',\'' + fmts.join(',') + '\',\'' + (m.auth_style || 'auto') + '\',' + (m.strip_fields ? 'true' : 'false') + ')">编辑</button> <button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + safeName + '\',\'' + safeId + '\')">删除</button></td>';
+                            '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button> <button class="btn btn-secondary btn-sm" onclick="editModel(\'' + safeName + '\',\'' + safeId + '\',\'' + escapeAttr(m.display_name || m.id) + '\',\'' + fmts.join(',') + '\',\'' + (m.auth_style || 'auto') + '\',' + (m.strip_fields ? 'true' : 'false') + ',\'' + escapeAttr(m.alias || '') + '\')">编辑</button> <button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + safeName + '\',\'' + safeId + '\')">删除</button></td>';
                         tbody.appendChild(tr);
                     });
                     _renderPagination('models-pagination', _pgModels,
@@ -774,7 +787,7 @@
             loadAddModelProviderOptions();
         }
 
-        function openEditModelModal(providerName, modelId, displayName, fmts, authStyle, stripFields) {
+        function openEditModelModal(providerName, modelId, displayName, fmts, authStyle, stripFields, alias) {
             document.getElementById('add-model-modal').classList.add('active');
             resetAddModelModal();
 
@@ -790,6 +803,7 @@
 
             // 填充模型信息（可修改）
             document.getElementById('modal-add-model-id').value = modelId;
+            document.getElementById('modal-add-model-alias').value = alias || '';
             document.getElementById('modal-add-model-display').value = displayName || modelId;
 
             // 设置格式
@@ -817,6 +831,7 @@
             document.getElementById('modal-add-model-upstream-select').innerHTML = '<option value="">-- 手动输入 --</option>';
             document.getElementById('modal-add-model-id').value = '';
             document.getElementById('modal-add-model-id').disabled = false;
+            document.getElementById('modal-add-model-alias').value = '';
             document.getElementById('modal-add-model-display').value = '';
             document.getElementById('modal-add-model-fmt-openai').checked = true;
             document.getElementById('modal-add-model-fmt-anthropic').checked = true;
@@ -844,9 +859,9 @@
                 .catch(function(err) { console.error('加载提供商失败', err); });
         }
 
-        function editModel(providerName, modelId, displayName, fmtsStr, authStyle, stripFields) {
+        function editModel(providerName, modelId, displayName, fmtsStr, authStyle, stripFields, alias) {
             var fmts = fmtsStr.split(',');
-            openEditModelModal(providerName, modelId, displayName, fmts, authStyle, !!stripFields);
+            openEditModelModal(providerName, modelId, displayName, fmts, authStyle, !!stripFields, alias || '');
         }
 
         function onAddModelProviderChange() {
@@ -915,13 +930,18 @@
                 return;
             }
 
+            var aliasInput = document.getElementById('modal-add-model-alias');
+            var aliasEmpty = !aliasInput.value.trim();
+
             if (selectedOptions.length === 1) {
-                // 单选：直接填充到输入框
                 var m = JSON.parse(selectedOptions[0].value);
                 document.getElementById('modal-add-model-id').value = m.id;
                 document.getElementById('modal-add-model-display').value = m.display_name || m.id;
+                // 别名为空时同时填入显示名称
+                if (aliasEmpty) {
+                    aliasInput.value = m.display_name || m.id;
+                }
             } else {
-                // 多选：显示已选数量
                 var ids = selectedOptions.map(function(opt) { var m = JSON.parse(opt.value); return m.id; });
                 document.getElementById('modal-add-model-id').value = ids.join(', ');
                 document.getElementById('modal-add-model-display').value = '';
@@ -946,6 +966,7 @@
 
             var authStyle = document.getElementById('modal-add-model-auth-style').value;
             var stripFields = document.getElementById('modal-add-model-strip-fields').checked;
+            var alias = document.getElementById('modal-add-model-alias').value.trim();
             var modelIds = modelIdInput.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
             if (modelIds.length === 0) { showToast('请输入有效的模型 ID', 'error'); return; }
 
@@ -978,23 +999,23 @@
                         api('/providers/' + encodeURIComponent(editingProvider) + '/models/' + encodeURIComponent(editingId), { method: 'DELETE' })
                             .then(function() {}, function() {})
                             .then(function() {
-                                return doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, modelIds);
+                                return doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, modelIds, alias);
                             });
                     } else {
                         // 添加模式
-                        doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, modelIds);
+                        doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, modelIds, alias);
                     }
                 })
                 .catch(function(err) { showToast(err.message, 'error'); });
         }
 
-        function doAddModels(providerName, modelIds, displayName, fmts, authStyle, stripFields, allIds) {
+        function doAddModels(providerName, modelIds, displayName, fmts, authStyle, stripFields, allIds, alias) {
             var promises = modelIds.map(function(mid) {
                 var dname = modelIds.length === 1 && displayName ? displayName : mid;
                 return api('/providers/' + encodeURIComponent(providerName) + '/models', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: mid, display_name: dname, supported_formats: fmts, auth_style: authStyle, strip_fields: stripFields })
+                    body: JSON.stringify({ id: mid, display_name: dname, supported_formats: fmts, auth_style: authStyle, strip_fields: stripFields, alias: alias })
                 });
             });
 
@@ -1063,6 +1084,8 @@
         var _settingsCustomPaths = [];
         var _settingsPublicPaths = [];
         var _settingsModelMap = {};
+        var _dbUsers = [];
+        var _currentUserIsAdmin = true;
 
         function _makeTag(text, removable, onRemove) {
             var tag = document.createElement('span');
@@ -1093,11 +1116,13 @@
                     _settingsCustomPaths = ((data.server && data.server.passthrough_paths) || []).slice();
                     _settingsPublicPaths = (data.sso_public_paths || []).slice();
                     _settingsModelMap = {};
+                    _dbUsers = data.users || [];
                     var mm = data.model_map || {};
                     Object.keys(mm).forEach(function(k) { _settingsModelMap[k] = mm[k]; });
                     renderCustomPaths();
                     renderPublicPaths();
                     renderModelMap();
+                    renderAdminUsers();
                     // 显示内置 SSO 白名单
                     var builtinContainer = document.getElementById('settings-builtin-paths');
                     if (builtinContainer) {
@@ -1175,6 +1200,81 @@
             renderPublicPaths();
         }
 
+        function renderAdminUsers() {
+            var container = document.getElementById('settings-admin-users');
+            if (!container) return;
+            container.textContent = '';
+            if (_dbUsers.length === 0) {
+                var empty = document.createElement('span');
+                empty.style.cssText = 'color:var(--text-primary);font-size:0.85rem';
+                empty.textContent = '暂无 SSO 登录用户（SSO 登录后自动创建）';
+                container.appendChild(empty);
+                return;
+            }
+            // 表格式展示
+            var table = document.createElement('table');
+            table.style.cssText = 'width:100%;border-collapse:collapse;margin-top:0.5rem';
+            var thead = document.createElement('thead');
+            thead.innerHTML = '<tr><th style="text-align:left;padding:0.3rem;color:var(--text-secondary)">用户名</th><th style="text-align:left;padding:0.3rem;color:var(--text-secondary)">显示名</th><th style="text-align:left;padding:0.3rem;color:var(--text-secondary)">最近登录</th><th style="text-align:center;padding:0.3rem;color:var(--text-secondary)">管理员</th></tr>';
+            table.appendChild(thead);
+            var tbody = document.createElement('tbody');
+            _dbUsers.forEach(function(u) {
+                var tr = document.createElement('tr');
+                tr.style.cssText = 'border-top:1px solid var(--border)';
+                var tdName = document.createElement('td');
+                tdName.style.cssText = 'padding:0.3rem;color:var(--text-primary)';
+                tdName.textContent = u.username;
+                var tdDisplay = document.createElement('td');
+                tdDisplay.style.cssText = 'padding:0.3rem;color:var(--text-primary)';
+                tdDisplay.textContent = u.display_name || '-';
+                var tdLogin = document.createElement('td');
+                tdLogin.style.cssText = 'padding:0.3rem;color:var(--text-secondary);font-size:0.85rem';
+                tdLogin.textContent = u.last_login ? u.last_login.substring(0, 19).replace('T', ' ') : '-';
+                var tdAdmin = document.createElement('td');
+                tdAdmin.style.cssText = 'text-align:center;padding:0.3rem';
+                var toggle = document.createElement('input');
+                toggle.type = 'checkbox';
+                toggle.checked = !!u.is_local_admin;
+                toggle.style.cssText = 'width:18px;height:18px;cursor:pointer';
+                toggle.onchange = (function(username) {
+                    return function() {
+                        toggleAdmin(username, this.checked);
+                    };
+                })(u.username);
+                tdAdmin.appendChild(toggle);
+                tr.appendChild(tdName);
+                tr.appendChild(tdDisplay);
+                tr.appendChild(tdLogin);
+                tr.appendChild(tdAdmin);
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            container.appendChild(table);
+        }
+
+        function toggleAdmin(username, isAdmin) {
+            api('/users/' + encodeURIComponent(username) + '/admin', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_admin: isAdmin })
+            })
+            .then(function(r) {
+                if (r.ok) {
+                    showToast(isAdmin ? '已设为管理员' : '已取消管理员');
+                    // 更新本地状态
+                    _dbUsers.forEach(function(u) {
+                        if (u.username === username) u.is_local_admin = isAdmin;
+                    });
+                } else {
+                    return r.json().then(function(e) { throw new Error(e.detail || '操作失败'); });
+                }
+            })
+            .catch(function(err) {
+                showToast(err.message, 'error');
+                renderAdminUsers(); // 刷新恢复
+            });
+        }
+
         function renderModelMap() {
             var container = document.getElementById('settings-model-map');
             container.textContent = '';
@@ -1249,6 +1349,40 @@
         // --- 初始化由认证流程触发 ---
 
         // --- SSO 自动登录 ---
+        function _applyAdminState(isAdmin) {
+            _currentUserIsAdmin = !!isAdmin;
+            if (!_currentUserIsAdmin) {
+                // CSS 隐藏所有操作按钮
+                var style = document.createElement('style');
+                style.id = 'viewer-override';
+                style.textContent = [
+                    '.nav-tab[data-tab="settings"] { display: none !important; }',
+                    '#btn-save-settings { display: none !important; }',
+                    'td .actions { display: none !important; }',
+                    'td > .btn { display: none !important; }',
+                    '.card-header .btn { display: none !important; }',
+                    'th:first-child, td:first-child { display: none !important; }',
+                    '.header-right .btn-secondary { display: none !important; }',
+                ].join('\n');
+                document.head.appendChild(style);
+                // 拦截模态框打开
+                var origOpen = window.openProviderModal;
+                window.openProviderModal = function() { showToast('查看者无权操作', 'error'); };
+                window.openAddModelModal = function() { showToast('查看者无权操作', 'error'); };
+                window.editModel = function() { showToast('查看者无权操作', 'error'); };
+                window.deleteModel = function() { showToast('查看者无权操作', 'error'); };
+                window.deleteProvider = function() { showToast('查看者无权操作', 'error'); };
+                window.testProvider = function() { showToast('查看者无权操作', 'error'); };
+                window.testModel = function() {};
+                window.saveProvider = function() { showToast('查看者无权操作', 'error'); };
+                window.submitAddModel = function() { showToast('查看者无权操作', 'error'); };
+                window.addModel = function() { showToast('查看者无权操作', 'error'); };
+                window.removeModel = function() { showToast('查看者无权操作', 'error'); };
+                window.deleteSelectedModels = function() { showToast('查看者无权操作', 'error'); };
+                window.testSelectedModels = function() { showToast('查看者无权操作', 'error'); };
+            }
+        }
+
         if (window.location.search.indexOf('sso=1') !== -1) {
             fetch(API_BASE + '/yz/user')
                 .then(function(r) { return r.json(); })
@@ -1258,6 +1392,7 @@
                         sessionStorage.setItem('ccProxyToken', authToken);
                         window.history.replaceState(null, '', '/');
                         showApp();
+                        _applyAdminState(data.is_admin);
                         showToast('欢迎，' + data.display_name, 'success');
                     } else {
                         showToast('SSO 登录失败，请重试', 'error');
@@ -1273,6 +1408,7 @@
                         authToken = 'sso';
                         sessionStorage.setItem('ccProxyToken', authToken);
                         showApp();
+                        _applyAdminState(data.is_admin);
                     }
                 })
                 .catch(function() {});

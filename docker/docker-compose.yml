@@ -1,8 +1,10 @@
 services:
   cc-proxy:
+    image: cc-proxy:latest
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    container_name: cc-proxy
     ports:
       - "5566:5566"
     environment:

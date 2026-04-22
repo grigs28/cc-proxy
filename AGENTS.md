@@ -11,6 +11,17 @@ CC-Proxy is a universal model gateway for Claude Code. It's a lightweight Python
 
 **Repository**: This is a bilingual project (Chinese/English). Code comments and documentation are primarily in Chinese.
 
+## ⚠️ 自杀防护（必读）
+
+**Claude Code 自身通过 5566 端口与模型通信。** 本项目的代理服务也运行在 5566 端口。
+
+**绝对禁止执行以下操作：**
+- `kill`、`pkill`、`killall` 任何监听 5566 端口的进程
+- `lsof -i :5566` 后 kill 结果（这会杀掉代理，导致 Claude 自身断连退出）
+- 停止 cc-proxy 服务前必须先确认不会影响当前会话
+
+如需重启服务，请用 `systemctl restart` 或 `docker restart` 等方式，不要直接 kill 端口进程。
+
 ## Technology Stack
 
 - **Language**: Python 3.10+

@@ -22,8 +22,9 @@ from cc_proxy.client import (
     openai_to_anthropic_streaming,
     stream_openai,
 )
-from cc_proxy.config import get_config, get_model_map, init_config, is_default_password
+from cc_proxy.config import get_config, get_db_config, get_model_map, init_config, is_default_password
 from cc_proxy.converter import convert_request, reverse_convert_request
+from cc_proxy.db import db_get_setting, init_db, migrate_from_yaml
 from cc_proxy.providers import get_registry
 from cc_proxy.stats import increment as inc_stats
 from cc_proxy.urls import build_openai_url
@@ -44,13 +45,21 @@ _DEFAULT_PASSTHROUGH_PATHS = [
 
 def _find_model(model_id: str):
     """查找模型，返回 (provider, model) 或 (None, None)。
-    单次注册表查找，避免热路径重复查找。
+    支持按模型 ID 或别名查找。别名匹配时返回真实模型对象。
     """
-    provider = get_registry().get_provider_for_model(model_id)
+    # 先按 model_map 映射
+    model_map = get_model_map()
+    mapped = model_map.get(model_id, model_id)
+
+    provider = get_registry().get_provider_for_model(mapped)
     if not provider:
         return None, None
     for m in provider.models:
-        if m.id == model_id:
+        if m.id == mapped:
+            return provider, m
+    # 按别名匹配
+    for m in provider.models:
+        if m.alias and m.alias == mapped:
             return provider, m
     return provider, None
 
@@ -78,10 +87,14 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models():
+    """返回模型列表：有别名的用别名，无别名的用模型 ID"""
     models = get_registry().list_all_models()
-    return {"object": "list", "data": [
-        {"id": m["id"], "object": "model", "created": 0, "owned_by": m.get("provider_name", "proxy")} for m in models
-    ]}
+    result = []
+    for m in models:
+        model_id = m["alias"] if m.get("alias") else m["id"]
+        result.append({"id": model_id, "object": "model", "created": 0,
+                        "owned_by": m.get("provider_name", "proxy")})
+    return {"object": "list", "data": result}
 
 
 @app.get("/v1/models/{model_id:path}")
@@ -103,6 +116,11 @@ async def messages_endpoint(request: Request):
         return JSONResponse(status_code=404, content={
             "type": "error", "error": {"type": "invalid_request_error",
                                         "message": f"Model '{model}' not found in any configured provider"}})
+
+    # 别名替换：如果通过别名匹配，将 body 中的 model 替换为真实 ID
+    if model_obj and model != model_obj.id:
+        body["model"] = model_obj.id
+        logger.info(f"  alias: {model} -> {model_obj.id}")
 
     supported = model_obj.supported_formats if model_obj else []
     auth_style = model_obj.auth_style if model_obj else "auto"
@@ -150,6 +168,11 @@ async def chat_completions_endpoint(request: Request):
                 "type": "invalid_request_error",
                 "code": "model_not_found",
             }})
+
+    # 别名替换
+    if model_obj and model != model_obj.id:
+        body["model"] = model_obj.id
+        logger.info(f"  alias: {model} -> {model_obj.id}")
 
     supported = model_obj.supported_formats if model_obj else []
     auth_style = model_obj.auth_style if model_obj else "auto"
@@ -220,11 +243,16 @@ async def _generic_passthrough(request: Request):
     if not model:
         return JSONResponse(status_code=400, content={"error": {"message": "model field required"}})
 
-    provider, _ = _find_model(model)
+    provider, model_obj = _find_model(model)
     if not provider:
         return JSONResponse(status_code=404, content={
             "error": {"message": f"Model '{model}' not found in any configured provider",
                       "type": "model_not_found"}})
+
+    # 别名替换
+    if model_obj and model != model_obj.id:
+        body["model"] = model_obj.id
+        logger.info(f"  alias: {model} -> {model_obj.id}")
 
     path = request.url.path
     base_url = provider.get_base_url("openai") or provider.get_base_url("anthropic")
@@ -258,17 +286,32 @@ async def catch_all(request: Request, path: str):
 
 
 def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
-    """创建 FastAPI 应用
-
-    单端口同时支持 Anthropic (/v1/messages) 和 OpenAI (/v1/chat/completions) 格式。
-
-    Args:
-        config_path: 配置文件路径
-        port: 实际监听端口
-    """
+    """创建 FastAPI 应用"""
     import cc_proxy.admin as admin_module
 
+    # 1. 加载启动配置
     init_config(config_path)
+
+    # 2. 初始化数据库
+    db_cfg = get_db_config()
+    init_db(db_cfg)
+
+    # 3. 首次运行：从 YAML 迁移数据
+    try:
+        if not db_get_setting("migrated"):
+            import yaml
+            yaml_path = config_path
+            try:
+                with open(yaml_path, "r", encoding="utf-8") as f:
+                    yaml_config = yaml.safe_load(f)
+                if yaml_config and yaml_config.get("providers"):
+                    migrate_from_yaml(yaml_config)
+            except Exception as e:
+                logger.warning(f"YAML 迁移检查失败: {e}")
+    except Exception as e:
+        logger.warning(f"迁移检查失败: {e}")
+
+    # 4. 加载 providers 到内存
     get_registry().reload()
 
     # 同步状态到 admin 模块
@@ -294,9 +337,8 @@ def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
     if not _yz_sso_loaded:
         app.middleware("http")(auth_middleware)
 
-    # 注册通用透传路由
-    cfg = get_config()
-    extra_paths = cfg.get("server", {}).get("passthrough_paths", [])
+    # 注册通用透传路由（从数据库读取自定义路径）
+    extra_paths = db_get_setting("passthrough_paths", [])
     all_paths = _DEFAULT_PASSTHROUGH_PATHS + extra_paths
     for p in all_paths:
         app.add_api_route(p, _generic_passthrough, methods=["POST"])

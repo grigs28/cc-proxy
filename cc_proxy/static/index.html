@@ -160,6 +160,7 @@
                                 <tr>
                                     <th><input type="checkbox" id="select-all-models" onchange="toggleAllModels(this)"></th>
                                     <th>模型 ID</th>
+                                    <th>别名</th>
                                     <th>显示名称</th>
                                     <th>所属提供商</th>
                                     <th>类型</th>
@@ -238,6 +239,10 @@
                         <div class="form-group" style="margin-top:0.5rem">
                             <label>内置白名单（只读）</label>
                             <div id="settings-builtin-paths" style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.75rem"></div>
+                        </div>
+                        <div class="form-group" style="margin-top:0.5rem">
+                            <label>用户管理（SSO 登录后自动创建，管理员开关即时生效）</label>
+                            <div id="settings-admin-users" style="margin-top:0.5rem"></div>
                         </div>
                         <div class="form-group">
                             <label>自定义白名单路径（无需登录即可访问）</label>
@@ -342,6 +347,10 @@
                 <div class="form-group">
                     <label>模型 ID</label>
                     <input type="text" id="modal-add-model-id" placeholder="模型唯一标识 (如: gpt-4o)" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                </div>
+                <div class="form-group">
+                    <label>模型别名</label>
+                    <input type="text" id="modal-add-model-alias" placeholder="调用时使用的短名 (如: kimi)" style="width:100%;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
                 </div>
                 <div class="form-group">
                     <label>显示名称</label>
