@@ -315,4 +315,11 @@ def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
     # catch-all 必须最后注册
     app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])(catch_all)
 
+    # 启动用量汇总后台任务
+    @app.on_event("startup")
+    async def startup_rollup():
+        from cc_proxy.rollup import rollup_loop
+        asyncio.create_task(rollup_loop())
+        logger.info("用量汇总后台任务已启动（每 6 小时）")
+
     return app

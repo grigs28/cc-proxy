@@ -32,6 +32,12 @@ def init_db(db_config: dict[str, Any]) -> None:
         )
     logger.info(f"数据库连接池已创建: {db_config['host']}:{db_config.get('port', 5432)}/{db_config.get('name', 'cc_proxy')}")
     _create_tables()
+    # 填充默认定价种子（延迟 import 避免循环依赖）
+    try:
+        from cc_proxy.pricing_seed import seed_model_pricing
+        seed_model_pricing()
+    except Exception as e:
+        logger.warning(f"定价种子执行失败: {e}")
 
 
 def _create_tables() -> None:
