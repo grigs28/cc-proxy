@@ -1080,7 +1080,7 @@ def db_get_usage_logs(page: int = 1, size: int = 20, model: str = "") -> dict[st
                 "input_tokens": row[3], "output_tokens": row[4],
                 "cache_read_tokens": row[5], "cache_creation_tokens": row[6],
                 "latency_ms": row[7], "status_code": row[8],
-                "is_streaming": row[9], "created_at": str(row[11]) if row[11] else None,
+                "is_streaming": row[9], "created_at": str(row[10]) if row[10] else None,
             })
         cur.close()
         return {"total": total, "page": page, "size": size, "logs": logs}
