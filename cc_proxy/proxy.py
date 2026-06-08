@@ -31,7 +31,7 @@ from cc_proxy.urls import build_openai_url
 
 logger = logging.getLogger("cc-proxy")
 
-VERSION = "0.4.0"
+VERSION = "0.5.1"
 
 # 通用透传端点列表（可通过 .env server.passthrough_paths 扩展）
 _DEFAULT_PASSTHROUGH_PATHS = [
@@ -125,16 +125,17 @@ async def messages_endpoint(request: Request):
     supported = model_obj.supported_formats if model_obj else []
     auth_style = model_obj.auth_style if model_obj else "auto"
     strip = model_obj.strip_fields if model_obj else False
+    cache_enabled = model_obj.cache_enabled if model_obj else False
 
-    logger.info(f"-> [anthropic] model={model} provider={provider.name} supported={supported} stream={is_stream}")
+    logger.info(f"-> [anthropic] model={model} provider={provider.name} supported={supported} cache={cache_enabled} stream={is_stream}")
     await inc_stats(model, provider.name)
 
     try:
         if "anthropic" in supported:
             if is_stream:
-                return await anthropic_passthrough_streaming(body, provider, auth_style, strip, user_agent)
+                return await anthropic_passthrough_streaming(body, provider, auth_style, strip, cache_enabled, user_agent)
             else:
-                return await anthropic_passthrough_non_streaming(body, provider, auth_style, strip, user_agent)
+                return await anthropic_passthrough_non_streaming(body, provider, auth_style, strip, cache_enabled, user_agent)
         else:
             model_map = get_model_map()
             openai_req = convert_request(body, model_map=model_map)
@@ -177,8 +178,9 @@ async def chat_completions_endpoint(request: Request):
     supported = model_obj.supported_formats if model_obj else []
     auth_style = model_obj.auth_style if model_obj else "auto"
     strip = model_obj.strip_fields if model_obj else False
+    cache_enabled = model_obj.cache_enabled if model_obj else False
 
-    logger.info(f"-> [openai] model={model} provider={provider.name} supported={supported} stream={is_stream}")
+    logger.info(f"-> [openai] model={model} provider={provider.name} supported={supported} cache={cache_enabled} stream={is_stream}")
     await inc_stats(model, provider.name)
 
     try:
@@ -209,9 +211,9 @@ async def chat_completions_endpoint(request: Request):
             model_map = get_model_map()
             anthropic_req = reverse_convert_request(body, model_map=model_map)
             if is_stream:
-                return await openai_to_anthropic_streaming(anthropic_req, model, provider, auth_style, strip, user_agent)
+                return await openai_to_anthropic_streaming(anthropic_req, model, provider, auth_style, strip, cache_enabled, user_agent)
             else:
-                return await openai_to_anthropic_non_streaming(anthropic_req, model, provider, auth_style, strip, user_agent)
+                return await openai_to_anthropic_non_streaming(anthropic_req, model, provider, auth_style, strip, cache_enabled, user_agent)
     except httpx.ConnectError:
         return JSONResponse(status_code=529, content={
             "error": {
