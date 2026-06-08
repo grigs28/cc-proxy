@@ -126,11 +126,11 @@
             return str.replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
 
-        // --- 标签页切换 ---
+        // --- 标签页切换（仅主 Tab，排除统计子 Tab）---
 
-        document.querySelectorAll('.nav-tab').forEach(function(tab) {
+        document.querySelectorAll('.nav-tabs .nav-tab[data-tab]').forEach(function(tab) {
             tab.addEventListener('click', function() {
-                document.querySelectorAll('.nav-tab').forEach(function(t) { t.classList.remove('active'); });
+                document.querySelectorAll('.nav-tabs .nav-tab[data-tab]').forEach(function(t) { t.classList.remove('active'); });
                 document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
                 tab.classList.add('active');
                 document.getElementById(tab.dataset.tab + '-tab').classList.add('active');
@@ -138,7 +138,7 @@
                 if (tab.dataset.tab === 'providers') loadProviders();
                 if (tab.dataset.tab === 'models') { loadModels(); }
                 if (tab.dataset.tab === 'dashboard') loadDashboard();
-                if (tab.dataset.tab === 'usage') loadUsage();
+                if (tab.dataset.tab === 'usage') { loadUsage(); resetUsageSubTabs(); }
                 if (tab.dataset.tab === 'settings') loadSettings();
                 // 保存配置按钮只在系统配置 tab 显示
                 var btnSave = document.getElementById('btn-save-settings');
@@ -1594,6 +1594,19 @@
         // ============================================================
         // 使用量子 Tab 切换
         // ============================================================
+        function resetUsageSubTabs() {
+            // 重置子 tab 为趋势（默认）
+            document.querySelectorAll('[data-usage-subtab]').forEach(function(btn) {
+                btn.classList.toggle('active', btn.getAttribute('data-usage-subtab') === 'trend');
+            });
+            ['models', 'providers', 'logs'].forEach(function(t) {
+                var el = document.getElementById('usage-subtab-' + t);
+                if (el) el.style.display = 'none';
+            });
+            var trendEl = document.getElementById('usage-subtab-trend');
+            if (trendEl) trendEl.style.display = '';
+        }
+
         function switchUsageSubTab(name) {
             document.querySelectorAll('[data-usage-subtab]').forEach(function(btn) {
                 btn.classList.toggle('active', btn.getAttribute('data-usage-subtab') === name);
