@@ -920,15 +920,15 @@ def db_get_usage_summary(days: int = 30) -> dict[str, Any]:
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(f"""
             SELECT COUNT(*) as cnt,
                    COALESCE(SUM(input_tokens), 0),
                    COALESCE(SUM(output_tokens), 0),
                    COALESCE(SUM(cache_read_tokens), 0),
                    COALESCE(SUM(cache_creation_tokens), 0)
             FROM request_logs
-            WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '%s days'
-        """, (days,))
+            WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '{int(days)} days'
+        """)
         row = cur.fetchone()
         cnt, inp, out, cr, cc = row
         cacheable = inp + cr + cc
@@ -948,34 +948,54 @@ def db_get_usage_summary(days: int = 30) -> dict[str, Any]:
 
 
 def db_get_usage_trend(days: int = 7) -> list[dict[str, Any]]:
-    """按天分组趋势数据"""
+    """按时间段分组趋势数据。
+    - 1 天 = 按小时聚合（24 个数据点）
+    - 2-90 天 = 按天聚合（DATE_TRUNC 兼容 openGauss）
+    """
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("""
-            SELECT created_at::date as day,
-                   COUNT(*) as cnt,
-                   COALESCE(SUM(input_tokens), 0),
-                   COALESCE(SUM(output_tokens), 0),
-                   COALESCE(SUM(cache_read_tokens), 0),
-                   COALESCE(SUM(cache_creation_tokens), 0)
-            FROM request_logs
-            WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '%s days'
-            GROUP BY created_at::date
-            ORDER BY day
-        """, (days,))
+        # openGauss 的 ::date 不会去掉时间部分（仍为 timestamp），
+        # 必须用 DATE_TRUNC 才能正确截断时间。
+        if days <= 1:
+            # 按小时聚合
+            cur.execute("""
+                SELECT DATE_TRUNC('hour', created_at) as bucket,
+                       COUNT(*) as cnt,
+                       COALESCE(SUM(input_tokens), 0),
+                       COALESCE(SUM(output_tokens), 0),
+                       COALESCE(SUM(cache_read_tokens), 0),
+                       COALESCE(SUM(cache_creation_tokens), 0)
+                FROM request_logs
+                WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '1 day'
+                GROUP BY DATE_TRUNC('hour', created_at)
+                ORDER BY bucket
+            """)
+        else:
+            cur.execute(f"""
+                SELECT DATE_TRUNC('day', created_at) as bucket,
+                       COUNT(*) as cnt,
+                       COALESCE(SUM(input_tokens), 0),
+                       COALESCE(SUM(output_tokens), 0),
+                       COALESCE(SUM(cache_read_tokens), 0),
+                       COALESCE(SUM(cache_creation_tokens), 0)
+                FROM request_logs
+                WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '{int(days)} days'
+                GROUP BY DATE_TRUNC('day', created_at)
+                ORDER BY bucket
+            """)
         result = []
         for row in cur.fetchall():
-            day, cnt, inp, out, cr, cc = row
+            bucket, cnt, inp, out, cr, cc = row
             cacheable = inp + cr + cc
             hit_rate = (cr / cacheable * 100) if cacheable > 0 else 0
             result.append({
-                "date": str(day),
+                "date": str(bucket),
                 "requests": cnt,
-                "input_tokens": inp,
-                "output_tokens": out,
-                "cache_read_tokens": cr,
-                "cache_creation_tokens": cc,
+                "input_tokens": int(inp or 0),
+                "output_tokens": int(out or 0),
+                "cache_read_tokens": int(cr or 0),
+                "cache_creation_tokens": int(cc or 0),
                 "cache_hit_rate": round(hit_rate, 1),
             })
         cur.close()
@@ -984,16 +1004,21 @@ def db_get_usage_trend(days: int = 7) -> list[dict[str, Any]]:
         put_conn(conn)
 
 
-def db_get_usage_logs(page: int = 1, size: int = 20, model: str = "") -> dict[str, Any]:
+def db_get_usage_logs(page: int = 1, size: int = 20, model: str = "", provider: str = "") -> dict[str, Any]:
     """分页查询请求日志"""
     conn = get_conn()
     try:
         cur = conn.cursor()
-        where = ""
+        conditions = []
         params: list[Any] = []
         if model:
-            where = "WHERE model_id = %s"
+            conditions.append("model_id = %s")
             params.append(model)
+        if provider:
+            conditions.append("provider_name = %s")
+            params.append(provider)
+
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
         # 总数
         cur.execute(f"SELECT COUNT(*) FROM request_logs {where}", params)
@@ -1020,6 +1045,87 @@ def db_get_usage_logs(page: int = 1, size: int = 20, model: str = "") -> dict[st
             })
         cur.close()
         return {"total": total, "page": page, "size": size, "logs": logs}
+    finally:
+        put_conn(conn)
+
+
+def db_get_model_stats(days: int = 30) -> list[dict[str, Any]]:
+    """按模型分组的统计数据（含成本）"""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT model_id, provider_name,
+                   COUNT(*) as cnt,
+                   COALESCE(SUM(input_tokens), 0),
+                   COALESCE(SUM(output_tokens), 0),
+                   COALESCE(SUM(cache_read_tokens), 0),
+                   COALESCE(SUM(cache_creation_tokens), 0),
+                   ROUND(AVG(latency_ms), 0)
+            FROM request_logs
+            WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '{int(days)} days'
+            GROUP BY model_id, provider_name
+            ORDER BY cnt DESC
+        """)
+        result = []
+        for row in cur.fetchall():
+            mid, pn, cnt, inp, out, cr, cc, avg_lat = row
+            cacheable = int(inp or 0) + int(cr or 0) + int(cc or 0)
+            hit_rate = (int(cr or 0) / cacheable * 100) if cacheable > 0 else 0
+            result.append({
+                "model_id": mid,
+                "provider_name": pn,
+                "requests": cnt,
+                "input_tokens": int(inp or 0),
+                "output_tokens": int(out or 0),
+                "cache_read_tokens": int(cr or 0),
+                "cache_creation_tokens": int(cc or 0),
+                "avg_latency_ms": int(avg_lat or 0),
+                "cache_hit_rate": round(hit_rate, 1),
+            })
+        cur.close()
+        return result
+    finally:
+        put_conn(conn)
+
+
+def db_get_provider_stats(days: int = 30) -> list[dict[str, Any]]:
+    """按提供商分组的统计数据"""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT provider_name,
+                   COUNT(*) as cnt,
+                   SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success_cnt,
+                   COALESCE(SUM(input_tokens), 0),
+                   COALESCE(SUM(output_tokens), 0),
+                   COALESCE(SUM(cache_read_tokens), 0),
+                   COALESCE(SUM(cache_creation_tokens), 0)
+            FROM request_logs
+            WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '{int(days)} days'
+            GROUP BY provider_name
+            ORDER BY cnt DESC
+        """)
+        result = []
+        for row in cur.fetchall():
+            pn, cnt, ok, inp, out, cr, cc = row
+            total_tok = int(inp or 0) + int(out or 0)
+            cacheable = int(inp or 0) + int(cr or 0) + int(cc or 0)
+            hit_rate = (int(cr or 0) / cacheable * 100) if cacheable > 0 else 0
+            result.append({
+                "provider_name": pn,
+                "requests": cnt,
+                "success": ok,
+                "failed": cnt - ok,
+                "success_rate": round(ok / cnt * 100, 1) if cnt > 0 else 0,
+                "input_tokens": int(inp or 0),
+                "output_tokens": int(out or 0),
+                "total_tokens": total_tok,
+                "cache_hit_rate": round(hit_rate, 1),
+            })
+        cur.close()
+        return result
     finally:
         put_conn(conn)
 

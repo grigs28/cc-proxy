@@ -251,7 +251,9 @@ async def admin_add_model(name: str, request: Request):
     return {"id": data["id"], "display_name": data.get("display_name", data["id"]),
             "alias": data.get("alias", ""),
             "supported_formats": data.get("supported_formats", ["openai", "anthropic"]),
-            "auth_style": data.get("auth_style", "auto"), "provider_name": name}
+            "auth_style": data.get("auth_style", "auto"),
+            "cache_enabled": data.get("cache_enabled", True),
+            "provider_name": name}
 
 
 @router.get("/api/providers/{name}/models")
@@ -366,6 +368,7 @@ async def admin_get_settings(request: Request):
     cfg = get_config()
     settings = db_get_all_settings()
     from cc_proxy.db import db_get_model_map
+    import os as _os
     return {
         "server": {
             "host": cfg.get("server", {}).get("host", "0.0.0.0"),
@@ -374,9 +377,9 @@ async def admin_get_settings(request: Request):
         },
         "sso_public_paths": settings.get("sso_public_paths", []),
         "sso_builtin_paths": ["/static/*", "/health", "/api/yz/callback", "/api/yz/logout", "/api/yz/user"],
-        "yz_login_enabled": cfg.get("yz_login_enabled", False),
-        "yz_login_url": cfg.get("yz_login_url", ""),
-        "cc_proxy_callback_url": cfg.get("cc_proxy_callback_url", ""),
+        "yz_login_enabled": _os.environ.get("YZ_LOGIN_ENABLED", "").lower() in ("true", "1") or cfg.get("yz_login_enabled", False),
+        "yz_login_url": _os.environ.get("YZ_LOGIN_URL") or cfg.get("yz_login_url", ""),
+        "cc_proxy_callback_url": _os.environ.get("CC_PROXY_CALLBACK_URL") or cfg.get("cc_proxy_callback_url", ""),
         "model_map": db_get_model_map(),
         "sso_admin_users": settings.get("sso_admin_users", []),
         "users": db_list_users(),
@@ -617,3 +620,135 @@ async def admin_test_provider(name: str, request: Request):
 
     any_success = any(r["success"] for r in results.values())
     return {"success": any_success, "results": results}
+
+
+# ============================================================
+# 使用量统计 API
+# ============================================================
+
+@router.get("/api/usage/summary")
+async def usage_summary(request: Request):
+    """使用量汇总"""
+    from cc_proxy.db import db_get_usage_summary, db_get_model_pricing
+    from cc_proxy.stats import get as get_stats
+
+    days_str = request.query_params.get("days", "30")
+    days = int(days_str) if days_str.isdigit() else 30
+    db_summary = db_get_usage_summary(days)
+    pricing = db_get_model_pricing()
+
+    # 计算估算成本
+    price_map = {p["model_id"]: p for p in pricing}
+    cost = 0.0
+    # 汇总中无法按模型拆分成本，仅用总量 × 平均价
+    if price_map:
+        avg_input = sum(p["input_cost_per_million"] for p in pricing) / len(pricing)
+        avg_output = sum(p["output_cost_per_million"] for p in pricing) / len(pricing)
+        avg_cache_read = sum(p["cache_read_cost_per_million"] for p in pricing) / len(pricing)
+        avg_cache_create = sum(p["cache_creation_cost_per_million"] for p in pricing) / len(pricing)
+    else:
+        avg_input = avg_output = avg_cache_read = avg_cache_create = 0
+
+    cost = (
+        db_summary.get("input_tokens", 0) * avg_input / 1_000_000 +
+        db_summary.get("output_tokens", 0) * avg_output / 1_000_000 +
+        db_summary.get("cache_read_tokens", 0) * avg_cache_read / 1_000_000 +
+        db_summary.get("cache_creation_tokens", 0) * avg_cache_create / 1_000_000
+    )
+
+    return {**db_summary, "estimated_cost_usd": round(cost, 4)}
+
+
+@router.get("/api/usage/trend")
+async def usage_trend(request: Request):
+    """按天趋势数据"""
+    from cc_proxy.db import db_get_usage_trend
+    days_str = request.query_params.get("days", "7")
+    days = int(days_str) if days_str.isdigit() else 7
+    return {"days": days, "trend": db_get_usage_trend(days)}
+
+
+@router.get("/api/usage/logs")
+async def usage_logs(request: Request):
+    """请求日志明细（分页）"""
+    from cc_proxy.db import db_get_usage_logs
+    page = int(request.query_params.get("page", "1"))
+    size = int(request.query_params.get("size", "20"))
+    model = request.query_params.get("model", "")
+    provider = request.query_params.get("provider", "")
+    return db_get_usage_logs(page=page, size=size, model=model, provider=provider)
+
+
+@router.get("/api/usage/models")
+async def usage_model_stats(request: Request):
+    """按模型分组的统计数据"""
+    from cc_proxy.db import db_get_model_stats, db_get_model_pricing
+    days_str = request.query_params.get("days", "30")
+    days = int(days_str) if days_str.isdigit() else 30
+    stats = db_get_model_stats(days)
+    pricing = db_get_model_pricing()
+    price_map = {p["model_id"]: p for p in pricing}
+
+    for s in stats:
+        mid = s["model_id"]
+        p = price_map.get(mid, {})
+        s["input_cost"] = round(s["input_tokens"] * p.get("input_cost_per_million", 0) / 1_000_000, 6)
+        s["output_cost"] = round(s["output_tokens"] * p.get("output_cost_per_million", 0) / 1_000_000, 6)
+        s["cache_read_cost"] = round(s["cache_read_tokens"] * p.get("cache_read_cost_per_million", 0) / 1_000_000, 6)
+        s["cache_create_cost"] = round(s["cache_creation_tokens"] * p.get("cache_creation_cost_per_million", 0) / 1_000_000, 6)
+        s["total_cost"] = round(s["input_cost"] + s["output_cost"] + s["cache_read_cost"] + s["cache_create_cost"], 6)
+        s["has_pricing"] = mid in price_map
+
+    return {"days": days, "models": stats}
+
+
+@router.get("/api/usage/providers")
+async def usage_provider_stats(request: Request):
+    """按提供商分组的统计数据"""
+    from cc_proxy.db import db_get_provider_stats
+    days_str = request.query_params.get("days", "30")
+    days = int(days_str) if days_str.isdigit() else 30
+    stats = db_get_provider_stats(days)
+    return {"days": days, "providers": stats}
+
+
+@router.get("/api/usage/pricing")
+async def usage_pricing_list():
+    """获取所有模型定价"""
+    from cc_proxy.db import db_get_model_pricing
+    return {"pricing": db_get_model_pricing()}
+
+
+@router.put("/api/usage/pricing")
+async def usage_pricing_batch_update(request: Request):
+    """批量更新模型定价"""
+    _check_admin(request)
+    from cc_proxy.db import db_set_model_pricing
+    data = await request.json()
+    items = data if isinstance(data, list) else [data]
+    results = []
+    for item in items:
+        model_id = item.get("model_id")
+        if not model_id:
+            continue
+        results.append(db_set_model_pricing(model_id, item))
+    return {"success": True, "pricing": results}
+
+
+@router.put("/api/usage/pricing/{model_id}")
+async def usage_pricing_update(model_id: str, request: Request):
+    """更新单个模型定价"""
+    _check_admin(request)
+    from cc_proxy.db import db_set_model_pricing
+    data = await request.json()
+    return db_set_model_pricing(model_id, data)
+
+
+@router.delete("/api/usage/pricing/{model_id}")
+async def usage_pricing_delete(model_id: str, request: Request):
+    """删除模型定价"""
+    _check_admin(request)
+    from cc_proxy.db import db_delete_model_pricing
+    if not db_delete_model_pricing(model_id):
+        raise HTTPException(status_code=404, detail=f"定价 '{model_id}' 不存在")
+    return {"success": True}

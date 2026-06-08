@@ -138,6 +138,7 @@
                 if (tab.dataset.tab === 'providers') loadProviders();
                 if (tab.dataset.tab === 'models') { loadModels(); }
                 if (tab.dataset.tab === 'dashboard') loadDashboard();
+                if (tab.dataset.tab === 'usage') loadUsage();
                 if (tab.dataset.tab === 'settings') loadSettings();
                 // 保存配置按钮只在系统配置 tab 显示
                 var btnSave = document.getElementById('btn-save-settings');
@@ -609,7 +610,7 @@
                             '<td><span class="badge badge-primary">' + escapeHtml(m.provider_name) + '</span></td>' +
                             '<td><span class="badge" style="background:' + typeColor + '">' + typeLabel + '</span></td>' +
                             '<td><span class="status-indicator" id="model-status-' + safeId.replace(/[^a-zA-Z0-9]/g, '_') + '"><span class="status-dot" style="background:var(--text-secondary)"></span></span></td>' +
-                            '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button> <button class="btn btn-secondary btn-sm" onclick="editModel(\'' + safeName + '\',\'' + safeId + '\',\'' + escapeAttr(m.display_name || m.id) + '\',\'' + fmts.join(',') + '\',\'' + (m.auth_style || 'auto') + '\',' + (m.strip_fields ? 'true' : 'false') + ',\'' + escapeAttr(m.alias || '') + '\')">编辑</button> <button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + safeName + '\',\'' + safeId + '\')">删除</button></td>';
+                            '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button> <button class="btn btn-secondary btn-sm" onclick="editModel(\'' + safeName + '\',\'' + safeId + '\',\'' + escapeAttr(m.display_name || m.id) + '\',\'' + fmts.join(',') + '\',\'' + (m.auth_style || 'auto') + '\',' + (m.strip_fields ? 'true' : 'false') + ',' + (m.cache_enabled !== false ? 'true' : 'false') + ',\'' + escapeAttr(m.alias || '') + '\')">编辑</button> <button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + safeName + '\',\'' + safeId + '\')">删除</button></td>';
                         tbody.appendChild(tr);
                     });
                     _renderPagination('models-pagination', _pgModels,
@@ -787,7 +788,7 @@
             loadAddModelProviderOptions();
         }
 
-        function openEditModelModal(providerName, modelId, displayName, fmts, authStyle, stripFields, alias) {
+        function openEditModelModal(providerName, modelId, displayName, fmts, authStyle, stripFields, cacheEnabled, alias) {
             document.getElementById('add-model-modal').classList.add('active');
             resetAddModelModal();
 
@@ -812,6 +813,7 @@
             // 设置认证方式
             document.getElementById('modal-add-model-auth-style').value = authStyle || 'auto';
             document.getElementById('modal-add-model-strip-fields').checked = !!stripFields;
+            document.getElementById('modal-add-model-cache-enabled').checked = cacheEnabled !== false;
         }
 
         function closeAddModelModal() {
@@ -837,6 +839,7 @@
             document.getElementById('modal-add-model-fmt-anthropic').checked = true;
             document.getElementById('modal-add-model-auth-style').value = 'auto';
             document.getElementById('modal-add-model-strip-fields').checked = false;
+            document.getElementById('modal-add-model-cache-enabled').checked = true;
             document.getElementById('modal-add-model-fetch-status').textContent = '';
         }
 
@@ -859,9 +862,9 @@
                 .catch(function(err) { console.error('加载提供商失败', err); });
         }
 
-        function editModel(providerName, modelId, displayName, fmtsStr, authStyle, stripFields, alias) {
+        function editModel(providerName, modelId, displayName, fmtsStr, authStyle, stripFields, cacheEnabled, alias) {
             var fmts = fmtsStr.split(',');
-            openEditModelModal(providerName, modelId, displayName, fmts, authStyle, !!stripFields, alias || '');
+            openEditModelModal(providerName, modelId, displayName, fmts, authStyle, !!stripFields, cacheEnabled, alias || '');
         }
 
         function onAddModelProviderChange() {
@@ -908,7 +911,7 @@
                     models.forEach(function(m) {
                         var opt = document.createElement('option');
                         opt.value = JSON.stringify({ id: m.id, display_name: m.display_name || m.id });
-                        opt.textContent = (m.display_name || m.id) + ' (' + m.id + ')';
+                        opt.textContent = m.display_name || m.id;
                         sel.appendChild(opt);
                     });
                     statusEl.textContent = '获取成功 (' + models.length + ' 个)';
@@ -966,6 +969,7 @@
 
             var authStyle = document.getElementById('modal-add-model-auth-style').value;
             var stripFields = document.getElementById('modal-add-model-strip-fields').checked;
+            var cacheEnabled = document.getElementById('modal-add-model-cache-enabled').checked;
             var alias = document.getElementById('modal-add-model-alias').value.trim();
             var modelIds = modelIdInput.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
             if (modelIds.length === 0) { showToast('请输入有效的模型 ID', 'error'); return; }
@@ -999,23 +1003,23 @@
                         api('/providers/' + encodeURIComponent(editingProvider) + '/models/' + encodeURIComponent(editingId), { method: 'DELETE' })
                             .then(function() {}, function() {})
                             .then(function() {
-                                return doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, modelIds, alias);
+                                return doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, cacheEnabled, modelIds, alias);
                             });
                     } else {
                         // 添加模式
-                        doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, modelIds, alias);
+                        doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, cacheEnabled, modelIds, alias);
                     }
                 })
                 .catch(function(err) { showToast(err.message, 'error'); });
         }
 
-        function doAddModels(providerName, modelIds, displayName, fmts, authStyle, stripFields, allIds, alias) {
+        function doAddModels(providerName, modelIds, displayName, fmts, authStyle, stripFields, cacheEnabled, allIds, alias) {
             var promises = modelIds.map(function(mid) {
                 var dname = modelIds.length === 1 && displayName ? displayName : mid;
                 return api('/providers/' + encodeURIComponent(providerName) + '/models', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: mid, display_name: dname, supported_formats: fmts, auth_style: authStyle, strip_fields: stripFields, alias: alias })
+                    body: JSON.stringify({ id: mid, display_name: dname, supported_formats: fmts, auth_style: authStyle, strip_fields: stripFields, cache_enabled: cacheEnabled, alias: alias })
                 });
             });
 
@@ -1143,6 +1147,8 @@
                         container.appendChild(_makeTag(p, false));
                     });
                 });
+
+            loadPricing();
         }
 
         function renderCustomPaths() {
@@ -1346,6 +1352,100 @@
             .catch(function(err) { showToast(err.message, 'error'); });
         }
 
+        // --- 模型定价 ---
+
+        var _pricingData = {};
+
+        function loadPricing() {
+            api('/usage/pricing')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    _pricingData = {};
+                    (data.pricing || []).forEach(function(p) {
+                        _pricingData[p.model_id] = p;
+                    });
+                    renderPricingList();
+                })
+                .catch(function(err) { console.error('load pricing failed', err); });
+        }
+
+        function renderPricingList() {
+            var tbody = document.getElementById('settings-pricing-body');
+            var models = Object.keys(_pricingData).sort();
+            tbody.textContent = '';
+            if (models.length === 0) {
+                var tr = document.createElement('tr');
+                tr.id = 'pricing-empty-row';
+                tr.innerHTML = '<td colspan="6" style="padding:1rem;color:var(--text-secondary);text-align:center">暂无定价数据</td>';
+                tbody.appendChild(tr);
+                return;
+            }
+            models.forEach(function(mid) {
+                var p = _pricingData[mid];
+                var tr = document.createElement('tr');
+                var inpStyle = 'width:100%;padding:0.3rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary);text-align:right';
+                tr.innerHTML =
+                    '<td style="padding:0.3rem">' +
+                    '<input style="width:100%;padding:0.3rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)" ' +
+                    'value="' + (p.display_name || mid) + '" onchange="_pricingData[\'' + mid + '\'].display_name=this.value">' +
+                    '<div style="font-size:0.75rem;color:var(--text-secondary)">' + mid + '</div>' +
+                    '</td>' +
+                    '<td style="padding:0.3rem"><input type="number" step="0.0001" min="0" style="' + inpStyle + '" value="' + (p.input_cost_per_million || 0) + '" onchange="_pricingData[\'' + mid + '\'].input_cost_per_million=parseFloat(this.value)||0"></td>' +
+                    '<td style="padding:0.3rem"><input type="number" step="0.0001" min="0" style="' + inpStyle + '" value="' + (p.output_cost_per_million || 0) + '" onchange="_pricingData[\'' + mid + '\'].output_cost_per_million=parseFloat(this.value)||0"></td>' +
+                    '<td style="padding:0.3rem"><input type="number" step="0.0001" min="0" style="' + inpStyle + '" value="' + (p.cache_read_cost_per_million || 0) + '" onchange="_pricingData[\'' + mid + '\'].cache_read_cost_per_million=parseFloat(this.value)||0"></td>' +
+                    '<td style="padding:0.3rem"><input type="number" step="0.0001" min="0" style="' + inpStyle + '" value="' + (p.cache_creation_cost_per_million || 0) + '" onchange="_pricingData[\'' + mid + '\'].cache_creation_cost_per_million=parseFloat(this.value)||0"></td>' +
+                    '<td style="padding:0.3rem;text-align:center"><button class="btn btn-sm" style="color:var(--danger);background:none;border:none;cursor:pointer;font-size:1.2rem" onclick="removePricingRow(\'' + mid + '\')">&times;</button></td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        function addPricingRow() {
+            var mid = prompt('请输入模型 ID（例如: deepseek-v4-pro）：');
+            if (!mid || !mid.trim()) return;
+            mid = mid.trim();
+            if (_pricingData[mid]) {
+                showToast('该模型定价已存在', 'error');
+                return;
+            }
+            _pricingData[mid] = {
+                model_id: mid,
+                display_name: mid,
+                input_cost_per_million: 0,
+                output_cost_per_million: 0,
+                cache_read_cost_per_million: 0,
+                cache_creation_cost_per_million: 0,
+            };
+            renderPricingList();
+        }
+
+        function removePricingRow(model_id) {
+            delete _pricingData[model_id];
+            renderPricingList();
+        }
+
+        function savePricing() {
+            var list = Object.values(_pricingData).map(function(p) {
+                return {
+                    model_id: p.model_id,
+                    display_name: p.display_name || p.model_id,
+                    input_cost_per_million: parseFloat(p.input_cost_per_million) || 0,
+                    output_cost_per_million: parseFloat(p.output_cost_per_million) || 0,
+                    cache_read_cost_per_million: parseFloat(p.cache_read_cost_per_million) || 0,
+                    cache_creation_cost_per_million: parseFloat(p.cache_creation_cost_per_million) || 0,
+                };
+            });
+            api('/usage/pricing', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(list)
+            })
+            .then(function(r) {
+                if (r.ok) { showToast('定价已保存'); loadPricing(); }
+                else { return r.json().then(function(e) { throw new Error(e.detail || '保存失败'); }); }
+            })
+            .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
         // --- 初始化由认证流程触发 ---
 
         // --- SSO 自动登录 ---
@@ -1412,4 +1512,204 @@
                     }
                 })
                 .catch(function() {});
+        }
+
+        // --- 使用量统计 ---
+
+        var _usageLogPage = 1;
+
+        function loadUsage() {
+            loadUsageSummary();
+            loadUsageTrend();
+            _usageLogPage = 1;
+            // 按需加载：当前激活的子 tab 才加载对应数据
+            var activeTab = document.querySelector('[data-usage-subtab].active');
+            if (activeTab) {
+                var tabName = activeTab.getAttribute('data-usage-subtab');
+                if (tabName === 'models') loadModelStats();
+                if (tabName === 'providers') loadProviderStats();
+                if (tabName === 'logs') loadUsageLogs(1);
+            }
+        }
+
+        function loadUsageSummary() {
+            var days = document.getElementById('usage-days').value || '30';
+            api('/usage/summary?days=' + days)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    document.getElementById('usage-total-requests').textContent = (data.total_requests || 0).toLocaleString();
+                    document.getElementById('usage-total-tokens').textContent = (data.total_tokens || 0).toLocaleString();
+                    document.getElementById('usage-cache-rate').textContent = (data.cache_hit_rate || 0) + '%';
+                    document.getElementById('usage-cost').textContent = '$ ' + (data.estimated_cost_usd || 0).toFixed(4);
+                })
+                .catch(function(err) { console.error('usage summary failed', err); });
+        }
+
+        function loadUsageTrend() {
+            var days = document.getElementById('usage-days').value || '7';
+            api('/usage/trend?days=' + days)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var container = document.getElementById('usage-trend-chart');
+                    var trend = data.trend || [];
+                    if (!trend.length) {
+                        container.innerHTML = '<div style="color:var(--text-secondary);text-align:center;width:100%">暂无数据</div>';
+                        return;
+                    }
+                    var maxReq = Math.max.apply(null, trend.map(function(d) { return d.requests; }));
+                    maxReq = Math.max(maxReq, 1);
+                    var html = '';
+                    // 今天按小时显示（最多 24 个），其他按天
+                    var isHourly = parseInt(days) <= 1;
+                    trend.forEach(function(d) {
+                        var h = Math.max(4, Math.round(d.requests / maxReq * 140));
+                        var rawDate = d.date || '';
+                        var label;
+                        if (isHourly && rawDate.length >= 16) {
+                            // "2026-06-08 14:00:00" -> "14:00"
+                            label = rawDate.substring(11, 16);
+                        } else if (rawDate.length >= 10) {
+                            // "2026-06-08..." -> "06-08"
+                            label = rawDate.substring(5, 10);
+                        } else {
+                            label = rawDate;
+                        }
+                        var cacheRate = d.cache_hit_rate || 0;
+                        var bg = cacheRate > 30 ? 'var(--success)' : cacheRate > 10 ? 'var(--warning)' : 'var(--primary)';
+                        html += '<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:30px">' +
+                            '<div style="font-size:0.7rem;color:var(--text-secondary)">' + d.requests + '</div>' +
+                            '<div style="width:100%;max-width:40px;height:' + h + 'px;background:' + bg + ';border-radius:3px 3px 0 0;transition:height 0.3s" title="' + rawDate + ': ' + d.requests + ' 请求, 缓存命中率 ' + cacheRate + '%"></div>' +
+                            '<div style="font-size:0.65rem;color:var(--text-secondary);white-space:nowrap">' + label + '</div>' +
+                        '</div>';
+                    });
+                    container.innerHTML = html;
+                    // 如果数据点多，自动滚到最右边（最新数据）
+                    if (trend.length > 30) {
+                        container.scrollLeft = container.scrollWidth;
+                    }
+                })
+                .catch(function(err) { console.error('usage trend failed', err); });
+        }
+
+        // ============================================================
+        // 使用量子 Tab 切换
+        // ============================================================
+        function switchUsageSubTab(name) {
+            document.querySelectorAll('[data-usage-subtab]').forEach(function(btn) {
+                btn.classList.toggle('active', btn.getAttribute('data-usage-subtab') === name);
+            });
+            ['trend', 'models', 'providers', 'logs'].forEach(function(t) {
+                var el = document.getElementById('usage-subtab-' + t);
+                if (el) el.style.display = t === name ? '' : 'none';
+            });
+            if (name === 'models') loadModelStats();
+            if (name === 'providers') loadProviderStats();
+            if (name === 'logs') loadUsageLogs(1);
+            if (name === 'trend') loadUsageTrend();
+        }
+
+        function loadModelStats() {
+            var days = document.getElementById('usage-days').value || '30';
+            api('/usage/models?days=' + days)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var tbody = document.getElementById('usage-models-body');
+                    var models = data.models || [];
+                    if (!models.length) {
+                        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:2rem">暂无数据</td></tr>';
+                        return;
+                    }
+                    var html = '';
+                    models.forEach(function(m) {
+                        var costStr = m.has_pricing ? ('$' + (m.total_cost || 0).toFixed(6)) : '<span style="color:var(--text-secondary)" title="未配置定价">-</span>';
+                        html += '<tr style="border-bottom:1px solid var(--border)">' +
+                            '<td style="padding:0.4rem 0.5rem"><span class="badge badge-primary">' + escapeHtml(m.model_id) + '</span></td>' +
+                            '<td style="padding:0.4rem 0.5rem;color:var(--text-secondary)">' + escapeHtml(m.provider_name || '-') + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (m.requests || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (m.input_tokens || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (m.output_tokens || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (m.cache_hit_rate || 0) + '%</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (m.avg_latency_ms || 0) + 'ms</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem;font-weight:600">' + costStr + '</td>' +
+                        '</tr>';
+                    });
+                    tbody.innerHTML = html;
+                })
+                .catch(function(err) { console.error('model stats failed', err); });
+        }
+
+        function loadProviderStats() {
+            var days = document.getElementById('usage-days').value || '30';
+            api('/usage/providers?days=' + days)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var tbody = document.getElementById('usage-providers-body');
+                    var providers = data.providers || [];
+                    if (!providers.length) {
+                        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:2rem">暂无数据</td></tr>';
+                        return;
+                    }
+                    var html = '';
+                    providers.forEach(function(p) {
+                        var rateColor = p.success_rate >= 99 ? 'var(--success)' : p.success_rate >= 90 ? 'var(--warning)' : 'var(--danger)';
+                        html += '<tr style="border-bottom:1px solid var(--border)">' +
+                            '<td style="padding:0.4rem 0.5rem"><strong>' + escapeHtml(p.provider_name) + '</strong></td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (p.requests || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem;color:var(--success)">' + (p.success || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem;color:' + (p.failed > 0 ? 'var(--danger)' : 'var(--text-secondary)') + '">' + (p.failed || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem;color:' + rateColor + ';font-weight:600">' + (p.success_rate || 0) + '%</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (p.total_tokens || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (p.cache_hit_rate || 0) + '%</td>' +
+                        '</tr>';
+                    });
+                    tbody.innerHTML = html;
+                })
+                .catch(function(err) { console.error('provider stats failed', err); });
+        }
+
+        function loadUsageLogs(goPage) {
+            var page = goPage || _usageLogPage;
+            var size = 15;
+            var model = document.getElementById('usage-filter-model') ? document.getElementById('usage-filter-model').value.trim() : '';
+            var provider = document.getElementById('usage-filter-provider') ? document.getElementById('usage-filter-provider').value.trim() : '';
+            var query = 'page=' + page + '&size=' + size;
+            if (model) query += '&model=' + encodeURIComponent(model);
+            if (provider) query += '&provider=' + encodeURIComponent(provider);
+            api('/usage/logs?' + query)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var tbody = document.getElementById('usage-logs-body');
+                    var logs = data.logs || [];
+                    if (!logs.length) {
+                        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:2rem">暂无请求日志</td></tr>';
+                        document.getElementById('usage-logs-pagination').innerHTML = '';
+                        return;
+                    }
+                    var html = '';
+                    logs.forEach(function(l) {
+                        var t = l.created_at ? l.created_at.replace('T', ' ').substring(0, 19) : '-';
+                        html += '<tr style="border-bottom:1px solid var(--border)">' +
+                            '<td style="padding:0.4rem 0.5rem;font-size:0.8rem">' + escapeHtml(t) + '</td>' +
+                            '<td style="padding:0.4rem 0.5rem"><span class="badge badge-primary">' + escapeHtml(l.model_id || '-') + '</span></td>' +
+                            '<td style="padding:0.4rem 0.5rem;color:var(--text-secondary);font-size:0.8rem">' + escapeHtml(l.provider_name || '-') + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (l.input_tokens || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (l.output_tokens || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (l.cache_read_tokens || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (l.cache_creation_tokens || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (l.latency_ms || 0) + 'ms</td>' +
+                        '</tr>';
+                    });
+                    tbody.innerHTML = html;
+                    _usageLogPage = page;
+
+                    // 分页
+                    var total = data.total || 0;
+                    var totalPages = Math.ceil(total / size) || 1;
+                    var pagHtml = '';
+                    if (page > 1) pagHtml += '<button class="btn btn-secondary btn-sm" onclick="loadUsageLogs(' + (page - 1) + ')">上一页</button>';
+                    pagHtml += '<span style="color:var(--text-secondary);font-size:0.85rem">' + page + ' / ' + totalPages + ' (' + total + ' 条)</span>';
+                    if (page < totalPages) pagHtml += '<button class="btn btn-secondary btn-sm" onclick="loadUsageLogs(' + (page + 1) + ')">下一页</button>';
+                    document.getElementById('usage-logs-pagination').innerHTML = pagHtml;
+                })
+                .catch(function(err) { console.error('usage logs failed', err); });
         }

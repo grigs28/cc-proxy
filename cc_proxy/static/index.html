@@ -50,6 +50,7 @@
                 <button class="nav-tab active" data-tab="dashboard">仪表板</button>
                 <button class="nav-tab" data-tab="providers">提供商</button>
                 <button class="nav-tab" data-tab="models">模型</button>
+                <button class="nav-tab" data-tab="usage">统计</button>
                 <button class="nav-tab" data-tab="settings">系统配置</button>
             </div>
             <button class="btn btn-primary btn-sm" id="btn-save-settings" style="display:none" onclick="saveAllSettings()">
@@ -178,6 +179,122 @@
                 </div>
             </div>
 
+            <!-- 使用量统计 -->
+            <div id="usage-tab" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h2>使用量统计</h2>
+                        <div style="display:flex;gap:0.5rem;align-items:center">
+                            <select id="usage-days" onchange="loadUsage()" style="padding:0.3rem 0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                                <option value="1">今天</option>
+                                <option value="7">近 7 天</option>
+                                <option value="30" selected>近 30 天</option>
+                                <option value="90">近 90 天</option>
+                            </select>
+                            <button class="btn btn-secondary btn-sm" onclick="loadUsage()">刷新</button>
+                        </div>
+                    </div>
+                    <!-- 汇总卡片 -->
+                    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.5rem" id="usage-summary-cards">
+                        <div class="card" style="margin:0;text-align:center;padding:1rem">
+                            <div style="font-size:0.85rem;color:var(--text-secondary)">总请求数</div>
+                            <div style="font-size:1.5rem;font-weight:600;margin-top:0.3rem" id="usage-total-requests">-</div>
+                        </div>
+                        <div class="card" style="margin:0;text-align:center;padding:1rem">
+                            <div style="font-size:0.85rem;color:var(--text-secondary)">总 Tokens</div>
+                            <div style="font-size:1.5rem;font-weight:600;margin-top:0.3rem" id="usage-total-tokens">-</div>
+                        </div>
+                        <div class="card" style="margin:0;text-align:center;padding:1rem">
+                            <div style="font-size:0.85rem;color:var(--text-secondary)">缓存命中率</div>
+                            <div style="font-size:1.5rem;font-weight:600;margin-top:0.3rem" id="usage-cache-rate">-</div>
+                        </div>
+                        <div class="card" style="margin:0;text-align:center;padding:1rem">
+                            <div style="font-size:0.85rem;color:var(--text-secondary)">估算成本</div>
+                            <div style="font-size:1.5rem;font-weight:600;margin-top:0.3rem" id="usage-cost">$ -</div>
+                        </div>
+                    </div>
+
+                    <!-- 子 Tab：趋势 / 模型统计 / 提供商统计 / 请求日志 -->
+                    <div style="display:flex;gap:0.25rem;border-bottom:2px solid var(--border);margin-bottom:1rem">
+                        <button class="nav-tab active" data-usage-subtab="trend" onclick="switchUsageSubTab('trend')">趋势</button>
+                        <button class="nav-tab" data-usage-subtab="models" onclick="switchUsageSubTab('models')">模型统计</button>
+                        <button class="nav-tab" data-usage-subtab="providers" onclick="switchUsageSubTab('providers')">提供商统计</button>
+                        <button class="nav-tab" data-usage-subtab="logs" onclick="switchUsageSubTab('logs')">请求日志</button>
+                    </div>
+
+                    <!-- 趋势柱状图 -->
+                    <div id="usage-subtab-trend">
+                        <div id="usage-trend-chart" style="display:flex;align-items:flex-end;gap:3px;height:160px;padding:0.5rem 0;border-bottom:2px solid var(--border);overflow-x:auto">
+                            <div style="color:var(--text-secondary);text-align:center;width:100%">加载中...</div>
+                        </div>
+                    </div>
+
+                    <!-- 模型统计 -->
+                    <div id="usage-subtab-models" style="display:none">
+                        <div style="overflow-x:auto">
+                            <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+                                <thead><tr style="border-bottom:2px solid var(--border)">
+                                    <th style="text-align:left;padding:0.5rem">模型</th>
+                                    <th style="text-align:left;padding:0.5rem">提供商</th>
+                                    <th style="text-align:right;padding:0.5rem">请求数</th>
+                                    <th style="text-align:right;padding:0.5rem">输入 Token</th>
+                                    <th style="text-align:right;padding:0.5rem">输出 Token</th>
+                                    <th style="text-align:right;padding:0.5rem">缓存命中率</th>
+                                    <th style="text-align:right;padding:0.5rem">平均延迟</th>
+                                    <th style="text-align:right;padding:0.5rem">成本</th>
+                                </tr></thead>
+                                <tbody id="usage-models-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 提供商统计 -->
+                    <div id="usage-subtab-providers" style="display:none">
+                        <div style="overflow-x:auto">
+                            <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+                                <thead><tr style="border-bottom:2px solid var(--border)">
+                                    <th style="text-align:left;padding:0.5rem">提供商</th>
+                                    <th style="text-align:right;padding:0.5rem">请求数</th>
+                                    <th style="text-align:right;padding:0.5rem">成功</th>
+                                    <th style="text-align:right;padding:0.5rem">失败</th>
+                                    <th style="text-align:right;padding:0.5rem">成功率</th>
+                                    <th style="text-align:right;padding:0.5rem">总 Token</th>
+                                    <th style="text-align:right;padding:0.5rem">缓存命中率</th>
+                                </tr></thead>
+                                <tbody id="usage-providers-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 请求日志 -->
+                    <div id="usage-subtab-logs" style="display:none">
+                        <!-- 筛选栏 -->
+                        <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap" id="usage-logs-filters">
+                            <input type="text" id="usage-filter-model" placeholder="模型筛选..." style="padding:0.3rem 0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary);width:140px">
+                            <input type="text" id="usage-filter-provider" placeholder="提供商筛选..." style="padding:0.3rem 0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary);width:140px">
+                            <button class="btn btn-secondary btn-sm" onclick="loadUsageLogs(1)">筛选</button>
+                            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('usage-filter-model').value='';document.getElementById('usage-filter-provider').value='';loadUsageLogs(1)">清除</button>
+                        </div>
+                        <div style="overflow-x:auto">
+                            <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+                                <thead><tr style="border-bottom:2px solid var(--border)">
+                                    <th style="text-align:left;padding:0.5rem">时间</th>
+                                    <th style="text-align:left;padding:0.5rem">模型</th>
+                                    <th style="text-align:left;padding:0.5rem">提供商</th>
+                                    <th style="text-align:right;padding:0.5rem">输入</th>
+                                    <th style="text-align:right;padding:0.5rem">输出</th>
+                                    <th style="text-align:right;padding:0.5rem">缓存读取</th>
+                                    <th style="text-align:right;padding:0.5rem">缓存创建</th>
+                                    <th style="text-align:right;padding:0.5rem">延迟</th>
+                                </tr></thead>
+                                <tbody id="usage-logs-body"></tbody>
+                            </table>
+                        </div>
+                        <div id="usage-logs-pagination" style="display:flex;justify-content:center;gap:0.5rem;margin-top:1rem"></div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 系统配置 -->
             <div id="settings-tab" class="tab-content">
                 <div class="card">
@@ -267,6 +384,34 @@
                             <input type="text" id="settings-map-to" placeholder="目标模型名" style="flex:1;padding:0.5rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
                             <button class="btn btn-primary btn-sm" onclick="addModelMap()">添加</button>
                         </div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top:1rem">
+                    <div class="card-header">
+                        <h2>模型定价</h2>
+                        <div class="header-right">
+                            <button class="btn btn-primary btn-sm" onclick="addPricingRow()">添加</button>
+                            <button class="btn btn-primary btn-sm" onclick="savePricing()" style="margin-left:0.5rem">保存定价</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <span style="color:var(--text-secondary);font-size:0.85rem">价格单位：美元 / 百万 tokens</span>
+                        <table style="width:100%;margin-top:0.5rem;border-collapse:collapse">
+                            <thead>
+                                <tr style="text-align:left;border-bottom:1px solid var(--border)">
+                                    <th style="padding:0.5rem;width:200px">模型</th>
+                                    <th style="padding:0.5rem;width:110px">Input</th>
+                                    <th style="padding:0.5rem;width:110px">Output</th>
+                                    <th style="padding:0.5rem;width:110px">Cache Read</th>
+                                    <th style="padding:0.5rem;width:110px">Cache Create</th>
+                                    <th style="padding:0.5rem;width:50px"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="settings-pricing-body">
+                                <tr id="pricing-empty-row"><td colspan="6" style="padding:1rem;color:var(--text-secondary);text-align:center">暂无定价数据</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -376,6 +521,9 @@
                 </div>
                 <div class="form-group">
                     <label><input type="checkbox" id="modal-add-model-strip-fields" style="width:18px;height:18px;vertical-align:middle;margin-right:4px"> 过滤非核心字段（thinking、metadata 等）</label>
+                </div>
+                <div class="form-group">
+                    <label><input type="checkbox" id="modal-add-model-cache-enabled" checked style="width:18px;height:18px;vertical-align:middle;margin-right:4px"> 启用 Prompt Cache（Anthropic 缓存优化）</label>
                 </div>
             </div>
             <div class="modal-footer">
