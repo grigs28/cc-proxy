@@ -62,6 +62,7 @@ def _create_tables() -> None:
                 supported_formats TEXT DEFAULT 'openai,anthropic',
                 auth_style VARCHAR(20) DEFAULT 'auto',
                 strip_fields BOOLEAN DEFAULT FALSE,
+                cache_enabled BOOLEAN DEFAULT TRUE,
                 provider_id INTEGER REFERENCES providers(id) ON DELETE CASCADE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(provider_id, model_id)
@@ -101,11 +102,57 @@ def _create_tables() -> None:
                 UNIQUE(model_id, provider_name)
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS request_logs (
+                id SERIAL PRIMARY KEY,
+                request_id VARCHAR(50) NOT NULL,
+                model_id VARCHAR(200) NOT NULL,
+                provider_name VARCHAR(100),
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_creation_tokens INTEGER DEFAULT 0,
+                latency_ms INTEGER DEFAULT 0,
+                status_code INTEGER DEFAULT 200,
+                is_streaming BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS model_pricing (
+                model_id VARCHAR(200) PRIMARY KEY,
+                display_name VARCHAR(200),
+                input_cost_per_million NUMERIC DEFAULT 0,
+                output_cost_per_million NUMERIC DEFAULT 0,
+                cache_read_cost_per_million NUMERIC DEFAULT 0,
+                cache_creation_cost_per_million NUMERIC DEFAULT 0
+            )
+        """)
         conn.commit()
         cur.close()
     except Exception:
         conn.rollback()
         raise
+    finally:
+        put_conn(conn)
+
+    # 兼容迁移：为已有数据库添加新列
+    _migrate_add_columns()
+
+
+def _migrate_add_columns():
+    """为已有数据库添加新列（幂等）"""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # 添加 cache_enabled 列
+        try:
+            cur.execute("ALTER TABLE models ADD COLUMN cache_enabled BOOLEAN DEFAULT TRUE")
+            conn.commit()
+            logger.info("数据库迁移：已添加 cache_enabled 列")
+        except Exception:
+            conn.rollback()  # 列已存在，忽略
+        cur.close()
     finally:
         put_conn(conn)
 
@@ -284,12 +331,12 @@ def db_delete_provider(name: str) -> bool:
 def _get_models_by_provider(cur, provider_id: int) -> list[dict[str, Any]]:
     """获取指定提供商的所有模型（使用现有游标）"""
     cur.execute("""
-        SELECT model_id, display_name, alias_name, supported_formats, auth_style, strip_fields
+        SELECT model_id, display_name, alias_name, supported_formats, auth_style, strip_fields, cache_enabled
         FROM models WHERE provider_id = %s ORDER BY id
     """, (provider_id,))
     models = []
     for row in cur.fetchall():
-        mid, dname, alias, fmts_str, auth, strip = row
+        mid, dname, alias, fmts_str, auth, strip, cache = row
         models.append({
             "id": mid,
             "display_name": dname or mid,
@@ -297,6 +344,7 @@ def _get_models_by_provider(cur, provider_id: int) -> list[dict[str, Any]]:
             "supported_formats": _parse_formats(fmts_str),
             "auth_style": auth or "auto",
             "strip_fields": bool(strip),
+            "cache_enabled": bool(cache),
         })
     return models
 
@@ -308,13 +356,13 @@ def db_get_all_models() -> list[dict[str, Any]]:
         cur = conn.cursor()
         cur.execute("""
             SELECT m.model_id, m.display_name, m.alias_name, m.supported_formats,
-                   m.auth_style, m.strip_fields, p.name AS provider_name
+                   m.auth_style, m.strip_fields, m.cache_enabled, p.name AS provider_name
             FROM models m JOIN providers p ON m.provider_id = p.id
             ORDER BY p.id, m.id
         """)
         models = []
         for row in cur.fetchall():
-            mid, dname, alias, fmts_str, auth, strip, pname = row
+            mid, dname, alias, fmts_str, auth, strip, cache, pname = row
             models.append({
                 "id": mid,
                 "display_name": dname or mid,
@@ -322,6 +370,7 @@ def db_get_all_models() -> list[dict[str, Any]]:
                 "supported_formats": _parse_formats(fmts_str),
                 "auth_style": auth or "auto",
                 "strip_fields": bool(strip),
+                "cache_enabled": bool(cache),
                 "provider_name": pname,
             })
         cur.close()
@@ -343,8 +392,8 @@ def db_add_model(provider_name: str, data: dict[str, Any]) -> dict[str, Any]:
         provider_id = row[0]
         fmts = ",".join(data.get("supported_formats", ["openai", "anthropic"]))
         cur.execute("""
-            INSERT INTO models (model_id, display_name, alias_name, supported_formats, auth_style, strip_fields, provider_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO models (model_id, display_name, alias_name, supported_formats, auth_style, strip_fields, cache_enabled, provider_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
             data["id"],
@@ -353,6 +402,7 @@ def db_add_model(provider_name: str, data: dict[str, Any]) -> dict[str, Any]:
             fmts,
             data.get("auth_style", "auto"),
             data.get("strip_fields", False),
+            data.get("cache_enabled", True),
             provider_id,
         ))
         conn.commit()
@@ -363,6 +413,7 @@ def db_add_model(provider_name: str, data: dict[str, Any]) -> dict[str, Any]:
             "supported_formats": data.get("supported_formats", ["openai", "anthropic"]),
             "auth_style": data.get("auth_style", "auto"),
             "strip_fields": data.get("strip_fields", False),
+            "cache_enabled": data.get("cache_enabled", True),
             "provider_name": provider_name,
         }
         cur.close()
@@ -402,6 +453,9 @@ def db_update_model(provider_name: str, model_id: str, data: dict[str, Any]) -> 
         if "strip_fields" in data:
             fields.append("strip_fields = %s")
             values.append(data["strip_fields"])
+        if "cache_enabled" in data:
+            fields.append("cache_enabled = %s")
+            values.append(data["cache_enabled"])
         if "id" in data and data["id"] != model_id:
             fields.append("model_id = %s")
             values.append(data["id"])
@@ -419,7 +473,7 @@ def db_update_model(provider_name: str, model_id: str, data: dict[str, Any]) -> 
         new_id = data.get("id", model_id)
         cur.execute("""
             SELECT m.model_id, m.display_name, m.alias_name, m.supported_formats,
-                   m.auth_style, m.strip_fields, p.name
+                   m.auth_style, m.strip_fields, m.cache_enabled, p.name
             FROM models m JOIN providers p ON m.provider_id = p.id
             WHERE m.provider_id = %s AND m.model_id = %s
         """, (provider_id, new_id))
@@ -427,11 +481,11 @@ def db_update_model(provider_name: str, model_id: str, data: dict[str, Any]) -> 
         cur.close()
         if not row:
             return None
-        mid, dname, alias, fmts_str, auth, strip, pname = row
+        mid, dname, alias, fmts_str, auth, strip, cache, pname = row
         return {
             "id": mid, "display_name": dname or mid, "alias": alias or "",
             "supported_formats": _parse_formats(fmts_str), "auth_style": auth or "auto",
-            "strip_fields": bool(strip), "provider_name": pname,
+            "strip_fields": bool(strip), "cache_enabled": bool(cache), "provider_name": pname,
         }
     except Exception:
         conn.rollback()
@@ -469,7 +523,7 @@ def db_find_model(model_id: str) -> Optional[tuple[dict, dict]]:
         # 先按 model_id 查
         cur.execute("""
             SELECT m.model_id, m.display_name, m.alias_name, m.supported_formats,
-                   m.auth_style, m.strip_fields,
+                   m.auth_style, m.strip_fields, m.cache_enabled,
                    p.id AS pid, p.name, p.api_key, p.timeout, p.provider_type,
                    p.supported_formats AS p_fmts, p.base_url_openai, p.base_url_anthropic, p.base_url
             FROM models m JOIN providers p ON m.provider_id = p.id
@@ -480,7 +534,7 @@ def db_find_model(model_id: str) -> Optional[tuple[dict, dict]]:
         if not row and model_id:
             cur.execute("""
                 SELECT m.model_id, m.display_name, m.alias_name, m.supported_formats,
-                       m.auth_style, m.strip_fields,
+                       m.auth_style, m.strip_fields, m.cache_enabled,
                        p.id AS pid, p.name, p.api_key, p.timeout, p.provider_type,
                        p.supported_formats AS p_fmts, p.base_url_openai, p.base_url_anthropic, p.base_url
                 FROM models m JOIN providers p ON m.provider_id = p.id
@@ -490,7 +544,7 @@ def db_find_model(model_id: str) -> Optional[tuple[dict, dict]]:
         cur.close()
         if not row:
             return None
-        (mid, dname, alias, mfmts, auth, strip,
+        (mid, dname, alias, mfmts, auth, strip, cache,
          pid, pname, pkey, ptimeout, ptype, pfmts, purl_o, purl_a, purl_b) = row
         provider = {
             "id": pid, "name": pname, "api_key": pkey, "timeout": ptimeout,
@@ -501,7 +555,7 @@ def db_find_model(model_id: str) -> Optional[tuple[dict, dict]]:
         model = {
             "id": mid, "display_name": dname or mid, "alias": alias or "",
             "supported_formats": _parse_formats(mfmts), "auth_style": auth or "auto",
-            "strip_fields": bool(strip), "provider_name": pname,
+            "strip_fields": bool(strip), "cache_enabled": bool(cache), "provider_name": pname,
         }
         return provider, model
     finally:
@@ -832,8 +886,218 @@ def migrate_from_yaml(yaml_config: dict[str, Any]) -> None:
 
 
 # ============================================================
-# 工具函数
+# Request Logs（使用量明细）
 # ============================================================
+
+def db_insert_request_log(data: dict[str, Any]) -> None:
+    """插入一条请求日志"""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO request_logs (request_id, model_id, provider_name,
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                latency_ms, status_code, is_streaming)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            data["request_id"], data["model_id"], data.get("provider_name", ""),
+            data.get("input_tokens", 0), data.get("output_tokens", 0),
+            data.get("cache_read_tokens", 0), data.get("cache_creation_tokens", 0),
+            data.get("latency_ms", 0), data.get("status_code", 200),
+            data.get("is_streaming", False),
+        ))
+        conn.commit()
+        cur.close()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        put_conn(conn)
+
+
+def db_get_usage_summary(days: int = 30) -> dict[str, Any]:
+    """获取使用量汇总"""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) as cnt,
+                   COALESCE(SUM(input_tokens), 0),
+                   COALESCE(SUM(output_tokens), 0),
+                   COALESCE(SUM(cache_read_tokens), 0),
+                   COALESCE(SUM(cache_creation_tokens), 0)
+            FROM request_logs
+            WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '%s days'
+        """, (days,))
+        row = cur.fetchone()
+        cnt, inp, out, cr, cc = row
+        cacheable = inp + cr + cc
+        hit_rate = (cr / cacheable * 100) if cacheable > 0 else 0
+        cur.close()
+        return {
+            "total_requests": cnt,
+            "input_tokens": inp,
+            "output_tokens": out,
+            "cache_read_tokens": cr,
+            "cache_creation_tokens": cc,
+            "total_tokens": inp + out + cr + cc,
+            "cache_hit_rate": round(hit_rate, 1),
+        }
+    finally:
+        put_conn(conn)
+
+
+def db_get_usage_trend(days: int = 7) -> list[dict[str, Any]]:
+    """按天分组趋势数据"""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT created_at::date as day,
+                   COUNT(*) as cnt,
+                   COALESCE(SUM(input_tokens), 0),
+                   COALESCE(SUM(output_tokens), 0),
+                   COALESCE(SUM(cache_read_tokens), 0),
+                   COALESCE(SUM(cache_creation_tokens), 0)
+            FROM request_logs
+            WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '%s days'
+            GROUP BY created_at::date
+            ORDER BY day
+        """, (days,))
+        result = []
+        for row in cur.fetchall():
+            day, cnt, inp, out, cr, cc = row
+            cacheable = inp + cr + cc
+            hit_rate = (cr / cacheable * 100) if cacheable > 0 else 0
+            result.append({
+                "date": str(day),
+                "requests": cnt,
+                "input_tokens": inp,
+                "output_tokens": out,
+                "cache_read_tokens": cr,
+                "cache_creation_tokens": cc,
+                "cache_hit_rate": round(hit_rate, 1),
+            })
+        cur.close()
+        return result
+    finally:
+        put_conn(conn)
+
+
+def db_get_usage_logs(page: int = 1, size: int = 20, model: str = "") -> dict[str, Any]:
+    """分页查询请求日志"""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        where = ""
+        params: list[Any] = []
+        if model:
+            where = "WHERE model_id = %s"
+            params.append(model)
+
+        # 总数
+        cur.execute(f"SELECT COUNT(*) FROM request_logs {where}", params)
+        total = cur.fetchone()[0]
+
+        # 分页数据
+        offset = (page - 1) * size
+        cur.execute(f"""
+            SELECT request_id, model_id, provider_name,
+                   input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                   latency_ms, status_code, is_streaming, created_at
+            FROM request_logs {where}
+            ORDER BY id DESC
+            LIMIT %s OFFSET %s
+        """, params + [size, offset])
+        logs = []
+        for row in cur.fetchall():
+            logs.append({
+                "request_id": row[0], "model_id": row[1], "provider_name": row[2],
+                "input_tokens": row[3], "output_tokens": row[4],
+                "cache_read_tokens": row[5], "cache_creation_tokens": row[6],
+                "latency_ms": row[7], "status_code": row[8],
+                "is_streaming": row[9], "created_at": str(row[10]) if row[10] else None,
+            })
+        cur.close()
+        return {"total": total, "page": page, "size": size, "logs": logs}
+    finally:
+        put_conn(conn)
+
+
+# ============================================================
+# Model Pricing（模型定价）
+# ============================================================
+
+def db_get_model_pricing() -> list[dict[str, Any]]:
+    """获取所有模型定价"""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT model_id, display_name,
+                   input_cost_per_million, output_cost_per_million,
+                   cache_read_cost_per_million, cache_creation_cost_per_million
+            FROM model_pricing ORDER BY model_id
+        """)
+        result = []
+        for row in cur.fetchall():
+            result.append({
+                "model_id": row[0], "display_name": row[1],
+                "input_cost_per_million": float(row[2]),
+                "output_cost_per_million": float(row[3]),
+                "cache_read_cost_per_million": float(row[4]),
+                "cache_creation_cost_per_million": float(row[5]),
+            })
+        cur.close()
+        return result
+    finally:
+        put_conn(conn)
+
+
+def db_set_model_pricing(model_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    """设置单个模型定价（openGauss 不支持 ON CONFLICT，用 DELETE + INSERT 实现 upsert）"""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM model_pricing WHERE model_id = %s", (model_id,))
+        cur.execute("""
+            INSERT INTO model_pricing (model_id, display_name,
+                input_cost_per_million, output_cost_per_million,
+                cache_read_cost_per_million, cache_creation_cost_per_million)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            model_id,
+            data.get("display_name", model_id),
+            data.get("input_cost_per_million", 0),
+            data.get("output_cost_per_million", 0),
+            data.get("cache_read_cost_per_million", 0),
+            data.get("cache_creation_cost_per_million", 0),
+        ))
+        conn.commit()
+        cur.close()
+        return {"model_id": model_id, **data}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        put_conn(conn)
+
+
+def db_delete_model_pricing(model_id: str) -> bool:
+    """删除模型定价"""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM model_pricing WHERE model_id = %s", (model_id,))
+        deleted = cur.rowcount > 0
+        conn.commit()
+        cur.close()
+        return deleted
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        put_conn(conn)
 
 def _parse_formats(fmts_str: Optional[str]) -> list[str]:
     """解析逗号分隔的格式字符串"""
