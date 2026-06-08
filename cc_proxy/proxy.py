@@ -24,6 +24,7 @@ from cc_proxy.client import (
 )
 from cc_proxy.config import get_config, get_model_map, init_config, is_default_password
 from cc_proxy.converter import convert_request, reverse_convert_request
+from cc_proxy.circuit import get_circuit_breaker
 from cc_proxy.providers import get_registry
 from cc_proxy.stats import increment as inc_stats
 from cc_proxy.urls import build_openai_url
@@ -111,6 +112,13 @@ async def messages_endpoint(request: Request):
     logger.info(f"-> [anthropic] model={model} provider={provider.name} supported={supported} stream={is_stream}")
     await inc_stats(model, provider.name)
 
+    # 熔断器检查
+    circuit = get_circuit_breaker(provider.name)
+    if not circuit.allow_request():
+        return JSONResponse(status_code=503, content={
+            "type": "error", "error": {"type": "overloaded_error",
+                                       "message": f"Provider '{provider.name}' is temporarily unavailable (circuit open)"}})
+
     try:
         if "anthropic" in supported:
             if is_stream:
@@ -125,10 +133,12 @@ async def messages_endpoint(request: Request):
             else:
                 return await openai_non_streaming(openai_req, model, provider, user_agent)
     except httpx.ConnectError:
+        get_circuit_breaker(provider.name).record_failure()
         return JSONResponse(status_code=529, content={
             "type": "error", "error": {"type": "overloaded_error",
                                        "message": f"Failed to connect to provider '{provider.name}'"}})
     except httpx.TimeoutException:
+        get_circuit_breaker(provider.name).record_failure()
         return JSONResponse(status_code=529, content={
             "type": "error", "error": {"type": "overloaded_error",
                                        "message": f"Upstream request to provider '{provider.name}' timed out"}})

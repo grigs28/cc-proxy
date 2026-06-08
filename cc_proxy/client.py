@@ -2,12 +2,22 @@
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import AsyncGenerator
 
 import httpx
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from cc_proxy.cache import inject_cache_control
+from cc_proxy.circuit import get_circuit_breaker
+from cc_proxy.usage import (
+    SseUsageCollector,
+    TokenUsage,
+    extract_usage_anthropic,
+    extract_usage_openai,
+    log_usage_async,
+)
 from cc_proxy.converter import (
     FINISH_REASON_MAP,
     build_content_block_delta_event,
@@ -71,36 +81,60 @@ def _clean_anthropic_body(body: dict) -> dict:
 
 async def anthropic_passthrough_streaming(body: dict, provider: Provider,
                                           auth_style: str = "auto", strip: bool = False,
+                                          cache_enabled: bool = False,
                                           user_agent: str = "") -> StreamingResponse:
     """Anthropic 直通流式：直接 pipe 上游 SSE 字节流"""
     clean_body = _clean_anthropic_body(body) if strip else body
+    if cache_enabled:
+        clean_body = inject_cache_control(clean_body)
     base_url = provider.get_base_url("anthropic")
     raw_url = f"{base_url.rstrip('/')}/v1/messages"
     url = dedupe_base_url_path(base_url, raw_url)
 
     async def pipe():
-        for attempt in range(MAX_RETRIES):
-            hdrs = anthropic_headers(provider, auth_style, user_agent)
-            logger.info(f"-> anthropic passthrough url={url} auth_style={auth_style} "
-                        f"body_keys={list(clean_body.keys())} body_size={len(json.dumps(clean_body))}")
-            async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
-                async with client.stream("POST", url, json=clean_body, headers=hdrs) as resp:
-                    if resp.status_code != 200:
-                        chunks = []
-                        async for chunk in resp.aiter_text():
-                            chunks.append(chunk)
-                        err = "".join(chunks)
-                        if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
-                            logger.warning(f"<- anthropic stream {resp.status_code} 重试 {attempt+1}/{MAX_RETRIES}: {err[:300]}")
-                            await asyncio.sleep(attempt + 1)
-                            continue
-                        logger.warning(f"<- anthropic stream {resp.status_code} 重试耗尽: {err[:300]}")
-                        yield (f"event: error\ndata: "
-                               f"{json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': err[:500]}})}\n\n")
-                        return
-                    async for chunk in resp.aiter_bytes():
-                        yield chunk
-                    break
+        t0 = time.time()
+        collector = SseUsageCollector(mode="anthropic")
+        _success = False
+        try:
+            for attempt in range(MAX_RETRIES):
+                hdrs = anthropic_headers(provider, auth_style, user_agent)
+                logger.info(f"-> anthropic passthrough url={url} auth_style={auth_style} "
+                            f"body_keys={list(clean_body.keys())} body_size={len(json.dumps(clean_body))}")
+                async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
+                    async with client.stream("POST", url, json=clean_body, headers=hdrs) as resp:
+                        if resp.status_code != 200:
+                            chunks = []
+                            async for chunk in resp.aiter_text():
+                                chunks.append(chunk)
+                            err = "".join(chunks)
+                            if resp.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+                                logger.warning(f"<- anthropic stream {resp.status_code} 重试 {attempt+1}/{MAX_RETRIES}: {err[:300]}")
+                                await asyncio.sleep(attempt + 1)
+                                continue
+                            logger.warning(f"<- anthropic stream {resp.status_code} 重试耗尽: {err[:300]}")
+                            yield (f"event: error\ndata: "
+                                   f"{json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': err[:500]}})}\n\n")
+                            return
+                        async for chunk in resp.aiter_bytes():
+                            yield chunk
+                            collector.feed(chunk)
+                        _success = True
+                        break
+        finally:
+            latency_ms = int((time.time() - t0) * 1000)
+            # 无论正常结束还是客户端断连，都记录 usage
+            usage = collector.get_usage()
+            logger.info(f"  sse_collector: events={len(collector._events)} "
+                        f"in={usage.input_tokens} out={usage.output_tokens} "
+                        f"cache_read={usage.cache_read_tokens} cache_create={usage.cache_creation_tokens}")
+            log_usage_async(usage, body.get("model", "unknown"), provider.name,
+                          latency_ms=latency_ms, is_streaming=True)
+            # 熔断器反馈
+            cb = get_circuit_breaker(provider.name)
+            if _success:
+                cb.record_success(latency_ms)
+            else:
+                cb.record_failure()
 
     return StreamingResponse(pipe(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
@@ -109,12 +143,16 @@ async def anthropic_passthrough_streaming(body: dict, provider: Provider,
 
 async def anthropic_passthrough_non_streaming(body: dict, provider: Provider,
                                               auth_style: str = "auto", strip: bool = False,
+                                              cache_enabled: bool = False,
                                               user_agent: str = "") -> JSONResponse:
     """Anthropic 直通非流式：原样返回 JSON"""
     clean_body = _clean_anthropic_body(body) if strip else body
+    if cache_enabled:
+        clean_body = inject_cache_control(clean_body)
     base_url = provider.get_base_url("anthropic")
     raw_url = f"{base_url.rstrip('/')}/v1/messages"
     url = dedupe_base_url_path(base_url, raw_url)
+    t0 = time.time()
     for attempt in range(MAX_RETRIES):
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
             resp = await client.post(url, json=clean_body, headers=anthropic_headers(provider, auth_style, user_agent))
@@ -124,13 +162,17 @@ async def anthropic_passthrough_non_streaming(body: dict, provider: Provider,
                     await asyncio.sleep(attempt + 1)
                     continue
                 logger.warning(f"<- anthropic {resp.status_code} 重试耗尽: {resp.text[:300]}")
+                get_circuit_breaker(provider.name).record_failure()
                 return JSONResponse(status_code=resp.status_code, content=resp.json())
-            return JSONResponse(status_code=resp.status_code, content=resp.json())
-
-
-# ============================================================
-# OpenAI 转换处理（收到 Anthropic 格式，转换发到 OpenAI 上游）
-# ============================================================
+            # 记录 usage
+            resp_json = resp.json()
+            usage = extract_usage_anthropic(resp_json)
+            latency_ms = int((time.time() - t0) * 1000)
+            log_usage_async(usage, body.get("model", "unknown"), provider.name,
+                          latency_ms=latency_ms,
+                          is_streaming=False)
+            get_circuit_breaker(provider.name).record_success(latency_ms)
+            return JSONResponse(status_code=resp.status_code, content=resp_json)
 
 async def openai_streaming(openai_req: dict, model: str, provider: Provider,
                           user_agent: str = "") -> StreamingResponse:
@@ -146,6 +188,8 @@ async def openai_streaming(openai_req: dict, model: str, provider: Provider,
         tc_states: dict[int, dict] = {}
         finish = "end_turn"
         out_tokens = 0
+        in_tokens = 0
+        t0 = time.time()
 
         for attempt in range(MAX_RETRIES):
             async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
@@ -186,6 +230,7 @@ async def openai_streaming(openai_req: dict, model: str, provider: Provider,
                             u = chunk.get("usage")
                             if u:
                                 out_tokens = u.get("completion_tokens", 0)
+                                in_tokens = u.get("prompt_tokens", 0)
                             continue
                         ch = choices[0]
                         delta = ch.get("delta", {})
@@ -235,6 +280,14 @@ async def openai_streaming(openai_req: dict, model: str, provider: Provider,
             yield build_content_block_stop_event(block_index)
         yield build_message_delta_event(finish, out_tokens)
         yield build_message_stop_event()
+        # 记录 usage（OpenAI 上游不返回缓存 token）
+        if in_tokens or out_tokens:
+            log_usage_async(
+                TokenUsage(input_tokens=in_tokens, output_tokens=out_tokens),
+                model, provider.name,
+                latency_ms=int((time.time() - t0) * 1000),
+                is_streaming=True,
+            )
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
@@ -246,6 +299,7 @@ async def openai_non_streaming(openai_req: dict, model: str, provider: Provider,
     """OpenAI 非流式 -> Anthropic JSON"""
     base_url = provider.get_base_url("openai")
     url = build_openai_url(base_url, "/v1/chat/completions")
+    t0 = time.time()
     for attempt in range(MAX_RETRIES):
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
             hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
@@ -264,7 +318,12 @@ async def openai_non_streaming(openai_req: dict, model: str, provider: Provider,
                     eb = {"error": {"message": resp.text, "type": "api_error"}}
                 st, bd = convert_error(resp.status_code, eb)
                 return JSONResponse(status_code=st, content=bd)
-            ar = convert_response(resp.json(), model=model)
+            resp_json = resp.json()
+            usage = extract_usage_openai(resp_json)
+            log_usage_async(usage, model, provider.name,
+                          latency_ms=int((time.time() - t0) * 1000),
+                          is_streaming=False)
+            ar = convert_response(resp_json, model=model)
             logger.info(f"<- 200 model={model} stop={ar.get('stop_reason')}")
             return JSONResponse(content=ar)
 
@@ -275,19 +334,24 @@ async def openai_non_streaming(openai_req: dict, model: str, provider: Provider,
 
 async def openai_to_anthropic_streaming(anthropic_req: dict, model: str, provider: Provider,
                                         auth_style: str = "auto", strip: bool = False,
+                                        cache_enabled: bool = False,
                                         user_agent: str = "") -> StreamingResponse:
     """Anthropic 流式直传（用于 OpenAI 模式收到 Anthropic 格式请求）"""
-    return await anthropic_passthrough_streaming(anthropic_req, provider, auth_style, strip, user_agent)
+    return await anthropic_passthrough_streaming(anthropic_req, provider, auth_style, strip, cache_enabled, user_agent)
 
 
 async def openai_to_anthropic_non_streaming(anthropic_req: dict, model: str, provider: Provider,
                                             auth_style: str = "auto", strip: bool = False,
+                                            cache_enabled: bool = False,
                                             user_agent: str = "") -> JSONResponse:
     """Anthropic 非流式直传，然后将响应转换为 OpenAI 格式"""
     base_url = provider.get_base_url("anthropic")
     raw_url = f"{base_url.rstrip('/')}/v1/messages"
     url = dedupe_base_url_path(base_url, raw_url)
     clean_body = _clean_anthropic_body(anthropic_req) if strip else anthropic_req
+    if cache_enabled:
+        clean_body = inject_cache_control(clean_body)
+    t0 = time.time()
     for attempt in range(MAX_RETRIES):
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
             resp = await client.post(url, json=clean_body, headers=anthropic_headers(provider, auth_style, user_agent))
@@ -299,6 +363,11 @@ async def openai_to_anthropic_non_streaming(anthropic_req: dict, model: str, pro
                 logger.warning(f"<- anthropic {resp.status_code} 重试耗尽: {resp.text[:300]}")
                 return JSONResponse(status_code=resp.status_code, content=resp.json())
             anthropic_resp = resp.json()
+            # 记录 usage
+            usage = extract_usage_anthropic(anthropic_resp)
+            log_usage_async(usage, model, provider.name,
+                          latency_ms=int((time.time() - t0) * 1000),
+                          is_streaming=False)
             openai_resp = reverse_convert_response(anthropic_resp)
             openai_resp["model"] = model
             return JSONResponse(status_code=resp.status_code, content=openai_resp)
@@ -313,6 +382,8 @@ async def stream_openai(url: str, hdrs: dict, body: dict, provider: Provider,
     """Stream OpenAI responses directly"""
     if user_agent:
         hdrs = {**hdrs, "User-Agent": user_agent}
+    t0 = time.time()
+    collector = SseUsageCollector(mode="openai")
     for attempt in range(MAX_RETRIES):
         async with httpx.AsyncClient(timeout=httpx.Timeout(provider.timeout)) as client:
             async with client.stream("POST", url, json=body, headers=hdrs) as resp:
@@ -330,4 +401,10 @@ async def stream_openai(url: str, hdrs: dict, body: dict, provider: Provider,
                     return
                 async for chunk in resp.aiter_bytes():
                     yield chunk
+                    collector.feed(chunk)
                 break
+    # 记录 usage
+    usage = collector.get_usage()
+    log_usage_async(usage, body.get("model", "unknown"), provider.name,
+                  latency_ms=int((time.time() - t0) * 1000),
+                  is_streaming=True)
