@@ -49,6 +49,18 @@
             document.getElementById('login-overlay').classList.add('hidden');
             document.getElementById('app').style.display = '';
             loadDashboard();
+            // 尝试获取当前用户名
+            if (authToken === 'sso') {
+                fetch(API_BASE + '/yz/user')
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (data.ok) {
+                            var el = document.getElementById('current-user');
+                            if (el) el.textContent = '当前登录：' + data.display_name + (data.is_admin ? ' (管理员)' : ' (查看者)');
+                        }
+                    })
+                    .catch(function() {});
+            }
         }
 
         function logout() {
@@ -126,6 +138,7 @@
                 if (tab.dataset.tab === 'providers') loadProviders();
                 if (tab.dataset.tab === 'models') { loadModels(); }
                 if (tab.dataset.tab === 'dashboard') loadDashboard();
+                if (tab.dataset.tab === 'usage') loadUsage();
                 if (tab.dataset.tab === 'settings') loadSettings();
                 // 保存配置按钮只在系统配置 tab 显示
                 var btnSave = document.getElementById('btn-save-settings');
@@ -592,11 +605,12 @@
                         tr.innerHTML =
                             '<td><input type="checkbox" class="model-checkbox" data-model-id="' + escapeHtml(m.id) + '" data-provider="' + escapeHtml(m.provider_name) + '"></td>' +
                             '<td><code>' + escapeHtml(m.id) + '</code></td>' +
+                            '<td>' + (m.alias ? '<code style="background:var(--accent-dim);border-color:rgba(124,92,255,0.2);color:var(--accent-hover)">' + escapeHtml(m.alias) + '</code>' : '<span style="color:var(--text-muted)">-</span>') + '</td>' +
                             '<td>' + escapeHtml(m.display_name) + '</td>' +
                             '<td><span class="badge badge-primary">' + escapeHtml(m.provider_name) + '</span></td>' +
                             '<td><span class="badge" style="background:' + typeColor + '">' + typeLabel + '</span></td>' +
                             '<td><span class="status-indicator" id="model-status-' + safeId.replace(/[^a-zA-Z0-9]/g, '_') + '"><span class="status-dot" style="background:var(--text-secondary)"></span></span></td>' +
-                            '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button> <button class="btn btn-secondary btn-sm" onclick="editModel(\'' + safeName + '\',\'' + safeId + '\',\'' + escapeAttr(m.display_name || m.id) + '\',\'' + fmts.join(',') + '\',\'' + (m.auth_style || 'auto') + '\',' + (m.strip_fields ? 'true' : 'false') + ')">编辑</button> <button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + safeName + '\',\'' + safeId + '\')">删除</button></td>';
+                            '<td><button class="btn btn-secondary btn-sm" onclick="testModel(\'' + safeName + '\',\'' + safeId + '\')">测试</button> <button class="btn btn-secondary btn-sm" onclick="editModel(\'' + safeName + '\',\'' + safeId + '\',\'' + escapeAttr(m.display_name || m.id) + '\',\'' + fmts.join(',') + '\',\'' + (m.auth_style || 'auto') + '\',' + (m.strip_fields ? 'true' : 'false') + ',' + (m.cache_enabled !== false ? 'true' : 'false') + ',\'' + escapeAttr(m.alias || '') + '\')">编辑</button> <button class="btn btn-danger btn-sm" onclick="deleteModel(\'' + safeName + '\',\'' + safeId + '\')">删除</button></td>';
                         tbody.appendChild(tr);
                     });
                     _renderPagination('models-pagination', _pgModels,
@@ -774,7 +788,7 @@
             loadAddModelProviderOptions();
         }
 
-        function openEditModelModal(providerName, modelId, displayName, fmts, authStyle, stripFields) {
+        function openEditModelModal(providerName, modelId, displayName, fmts, authStyle, stripFields, cacheEnabled, alias) {
             document.getElementById('add-model-modal').classList.add('active');
             resetAddModelModal();
 
@@ -790,6 +804,7 @@
 
             // 填充模型信息（可修改）
             document.getElementById('modal-add-model-id').value = modelId;
+            document.getElementById('modal-add-model-alias').value = alias || '';
             document.getElementById('modal-add-model-display').value = displayName || modelId;
 
             // 设置格式
@@ -798,6 +813,7 @@
             // 设置认证方式
             document.getElementById('modal-add-model-auth-style').value = authStyle || 'auto';
             document.getElementById('modal-add-model-strip-fields').checked = !!stripFields;
+            document.getElementById('modal-add-model-cache-enabled').checked = cacheEnabled !== false;
         }
 
         function closeAddModelModal() {
@@ -817,11 +833,13 @@
             document.getElementById('modal-add-model-upstream-select').innerHTML = '<option value="">-- 手动输入 --</option>';
             document.getElementById('modal-add-model-id').value = '';
             document.getElementById('modal-add-model-id').disabled = false;
+            document.getElementById('modal-add-model-alias').value = '';
             document.getElementById('modal-add-model-display').value = '';
             document.getElementById('modal-add-model-fmt-openai').checked = true;
             document.getElementById('modal-add-model-fmt-anthropic').checked = true;
             document.getElementById('modal-add-model-auth-style').value = 'auto';
             document.getElementById('modal-add-model-strip-fields').checked = false;
+            document.getElementById('modal-add-model-cache-enabled').checked = true;
             document.getElementById('modal-add-model-fetch-status').textContent = '';
         }
 
@@ -844,9 +862,9 @@
                 .catch(function(err) { console.error('加载提供商失败', err); });
         }
 
-        function editModel(providerName, modelId, displayName, fmtsStr, authStyle, stripFields) {
+        function editModel(providerName, modelId, displayName, fmtsStr, authStyle, stripFields, cacheEnabled, alias) {
             var fmts = fmtsStr.split(',');
-            openEditModelModal(providerName, modelId, displayName, fmts, authStyle, !!stripFields);
+            openEditModelModal(providerName, modelId, displayName, fmts, authStyle, !!stripFields, cacheEnabled, alias || '');
         }
 
         function onAddModelProviderChange() {
@@ -893,7 +911,7 @@
                     models.forEach(function(m) {
                         var opt = document.createElement('option');
                         opt.value = JSON.stringify({ id: m.id, display_name: m.display_name || m.id });
-                        opt.textContent = (m.display_name || m.id) + ' (' + m.id + ')';
+                        opt.textContent = m.display_name || m.id;
                         sel.appendChild(opt);
                     });
                     statusEl.textContent = '获取成功 (' + models.length + ' 个)';
@@ -915,13 +933,18 @@
                 return;
             }
 
+            var aliasInput = document.getElementById('modal-add-model-alias');
+            var aliasEmpty = !aliasInput.value.trim();
+
             if (selectedOptions.length === 1) {
-                // 单选：直接填充到输入框
                 var m = JSON.parse(selectedOptions[0].value);
                 document.getElementById('modal-add-model-id').value = m.id;
                 document.getElementById('modal-add-model-display').value = m.display_name || m.id;
+                // 别名为空时同时填入显示名称
+                if (aliasEmpty) {
+                    aliasInput.value = m.display_name || m.id;
+                }
             } else {
-                // 多选：显示已选数量
                 var ids = selectedOptions.map(function(opt) { var m = JSON.parse(opt.value); return m.id; });
                 document.getElementById('modal-add-model-id').value = ids.join(', ');
                 document.getElementById('modal-add-model-display').value = '';
@@ -946,6 +969,8 @@
 
             var authStyle = document.getElementById('modal-add-model-auth-style').value;
             var stripFields = document.getElementById('modal-add-model-strip-fields').checked;
+            var cacheEnabled = document.getElementById('modal-add-model-cache-enabled').checked;
+            var alias = document.getElementById('modal-add-model-alias').value.trim();
             var modelIds = modelIdInput.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
             if (modelIds.length === 0) { showToast('请输入有效的模型 ID', 'error'); return; }
 
@@ -978,23 +1003,23 @@
                         api('/providers/' + encodeURIComponent(editingProvider) + '/models/' + encodeURIComponent(editingId), { method: 'DELETE' })
                             .then(function() {}, function() {})
                             .then(function() {
-                                return doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, modelIds);
+                                return doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, cacheEnabled, modelIds, alias);
                             });
                     } else {
                         // 添加模式
-                        doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, modelIds);
+                        doAddModels(providerName, newIds, displayName, fmts, authStyle, stripFields, cacheEnabled, modelIds, alias);
                     }
                 })
                 .catch(function(err) { showToast(err.message, 'error'); });
         }
 
-        function doAddModels(providerName, modelIds, displayName, fmts, authStyle, stripFields, allIds) {
+        function doAddModels(providerName, modelIds, displayName, fmts, authStyle, stripFields, cacheEnabled, allIds, alias) {
             var promises = modelIds.map(function(mid) {
                 var dname = modelIds.length === 1 && displayName ? displayName : mid;
                 return api('/providers/' + encodeURIComponent(providerName) + '/models', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: mid, display_name: dname, supported_formats: fmts, auth_style: authStyle, strip_fields: stripFields })
+                    body: JSON.stringify({ id: mid, display_name: dname, supported_formats: fmts, auth_style: authStyle, strip_fields: stripFields, cache_enabled: cacheEnabled, alias: alias })
                 });
             });
 
@@ -1063,6 +1088,8 @@
         var _settingsCustomPaths = [];
         var _settingsPublicPaths = [];
         var _settingsModelMap = {};
+        var _dbUsers = [];
+        var _currentUserIsAdmin = true;
 
         function _makeTag(text, removable, onRemove) {
             var tag = document.createElement('span');
@@ -1093,11 +1120,13 @@
                     _settingsCustomPaths = ((data.server && data.server.passthrough_paths) || []).slice();
                     _settingsPublicPaths = (data.sso_public_paths || []).slice();
                     _settingsModelMap = {};
+                    _dbUsers = data.users || [];
                     var mm = data.model_map || {};
                     Object.keys(mm).forEach(function(k) { _settingsModelMap[k] = mm[k]; });
                     renderCustomPaths();
                     renderPublicPaths();
                     renderModelMap();
+                    renderAdminUsers();
                     // 显示内置 SSO 白名单
                     var builtinContainer = document.getElementById('settings-builtin-paths');
                     if (builtinContainer) {
@@ -1118,6 +1147,10 @@
                         container.appendChild(_makeTag(p, false));
                     });
                 });
+
+            loadPricing();
+            loadHealth();
+            loadRollupSetting();
         }
 
         function renderCustomPaths() {
@@ -1173,6 +1206,81 @@
             _settingsPublicPaths.push(val);
             input.value = '';
             renderPublicPaths();
+        }
+
+        function renderAdminUsers() {
+            var container = document.getElementById('settings-admin-users');
+            if (!container) return;
+            container.textContent = '';
+            if (_dbUsers.length === 0) {
+                var empty = document.createElement('span');
+                empty.style.cssText = 'color:var(--text-primary);font-size:0.85rem';
+                empty.textContent = '暂无 SSO 登录用户（SSO 登录后自动创建）';
+                container.appendChild(empty);
+                return;
+            }
+            // 表格式展示
+            var table = document.createElement('table');
+            table.style.cssText = 'width:100%;border-collapse:collapse;margin-top:0.5rem';
+            var thead = document.createElement('thead');
+            thead.innerHTML = '<tr><th style="text-align:left;padding:0.3rem;color:var(--text-secondary)">用户名</th><th style="text-align:left;padding:0.3rem;color:var(--text-secondary)">显示名</th><th style="text-align:left;padding:0.3rem;color:var(--text-secondary)">最近登录</th><th style="text-align:center;padding:0.3rem;color:var(--text-secondary)">管理员</th></tr>';
+            table.appendChild(thead);
+            var tbody = document.createElement('tbody');
+            _dbUsers.forEach(function(u) {
+                var tr = document.createElement('tr');
+                tr.style.cssText = 'border-top:1px solid var(--border)';
+                var tdName = document.createElement('td');
+                tdName.style.cssText = 'padding:0.3rem;color:var(--text-primary)';
+                tdName.textContent = u.username;
+                var tdDisplay = document.createElement('td');
+                tdDisplay.style.cssText = 'padding:0.3rem;color:var(--text-primary)';
+                tdDisplay.textContent = u.display_name || '-';
+                var tdLogin = document.createElement('td');
+                tdLogin.style.cssText = 'padding:0.3rem;color:var(--text-secondary);font-size:0.85rem';
+                tdLogin.textContent = u.last_login ? u.last_login.substring(0, 19).replace('T', ' ') : '-';
+                var tdAdmin = document.createElement('td');
+                tdAdmin.style.cssText = 'text-align:center;padding:0.3rem';
+                var toggle = document.createElement('input');
+                toggle.type = 'checkbox';
+                toggle.checked = !!u.is_local_admin;
+                toggle.style.cssText = 'width:18px;height:18px;cursor:pointer';
+                toggle.onchange = (function(username) {
+                    return function() {
+                        toggleAdmin(username, this.checked);
+                    };
+                })(u.username);
+                tdAdmin.appendChild(toggle);
+                tr.appendChild(tdName);
+                tr.appendChild(tdDisplay);
+                tr.appendChild(tdLogin);
+                tr.appendChild(tdAdmin);
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            container.appendChild(table);
+        }
+
+        function toggleAdmin(username, isAdmin) {
+            api('/users/' + encodeURIComponent(username) + '/admin', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_admin: isAdmin })
+            })
+            .then(function(r) {
+                if (r.ok) {
+                    showToast(isAdmin ? '已设为管理员' : '已取消管理员');
+                    // 更新本地状态
+                    _dbUsers.forEach(function(u) {
+                        if (u.username === username) u.is_local_admin = isAdmin;
+                    });
+                } else {
+                    return r.json().then(function(e) { throw new Error(e.detail || '操作失败'); });
+                }
+            })
+            .catch(function(err) {
+                showToast(err.message, 'error');
+                renderAdminUsers(); // 刷新恢复
+            });
         }
 
         function renderModelMap() {
@@ -1246,9 +1354,231 @@
             .catch(function(err) { showToast(err.message, 'error'); });
         }
 
+        // --- 模型定价 ---
+
+        var _pricingData = {};
+
+        function loadPricing() {
+            api('/usage/pricing')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    _pricingData = {};
+                    (data.pricing || []).forEach(function(p) {
+                        _pricingData[p.model_id] = p;
+                    });
+                    renderPricingList();
+                })
+                .catch(function(err) { console.error('load pricing failed', err); });
+        }
+
+        function renderPricingList() {
+            var tbody = document.getElementById('settings-pricing-body');
+            var models = Object.keys(_pricingData).sort();
+            tbody.textContent = '';
+            if (models.length === 0) {
+                var tr = document.createElement('tr');
+                tr.id = 'pricing-empty-row';
+                tr.innerHTML = '<td colspan="6" style="padding:1rem;color:var(--text-secondary);text-align:center">暂无定价数据</td>';
+                tbody.appendChild(tr);
+                return;
+            }
+            models.forEach(function(mid) {
+                var p = _pricingData[mid];
+                var tr = document.createElement('tr');
+                var inpStyle = 'width:100%;padding:0.3rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary);text-align:right';
+                tr.innerHTML =
+                    '<td style="padding:0.3rem">' +
+                    '<input style="width:100%;padding:0.3rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)" ' +
+                    'value="' + (p.display_name || mid) + '" onchange="_pricingData[\'' + mid + '\'].display_name=this.value">' +
+                    '<div style="font-size:0.75rem;color:var(--text-secondary)">' + mid + '</div>' +
+                    '</td>' +
+                    '<td style="padding:0.3rem"><input type="number" step="0.0001" min="0" style="' + inpStyle + '" value="' + (p.input_cost_per_million || 0) + '" onchange="_pricingData[\'' + mid + '\'].input_cost_per_million=parseFloat(this.value)||0"></td>' +
+                    '<td style="padding:0.3rem"><input type="number" step="0.0001" min="0" style="' + inpStyle + '" value="' + (p.output_cost_per_million || 0) + '" onchange="_pricingData[\'' + mid + '\'].output_cost_per_million=parseFloat(this.value)||0"></td>' +
+                    '<td style="padding:0.3rem"><input type="number" step="0.0001" min="0" style="' + inpStyle + '" value="' + (p.cache_read_cost_per_million || 0) + '" onchange="_pricingData[\'' + mid + '\'].cache_read_cost_per_million=parseFloat(this.value)||0"></td>' +
+                    '<td style="padding:0.3rem"><input type="number" step="0.0001" min="0" style="' + inpStyle + '" value="' + (p.cache_creation_cost_per_million || 0) + '" onchange="_pricingData[\'' + mid + '\'].cache_creation_cost_per_million=parseFloat(this.value)||0"></td>' +
+                    '<td style="padding:0.3rem;text-align:center"><button class="btn btn-sm" style="color:var(--danger);background:none;border:none;cursor:pointer;font-size:1.2rem" onclick="removePricingRow(\'' + mid + '\')">&times;</button></td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        function addPricingRow() {
+            var mid = prompt('请输入模型 ID（例如: deepseek-v4-pro）：');
+            if (!mid || !mid.trim()) return;
+            mid = mid.trim();
+            if (_pricingData[mid]) {
+                showToast('该模型定价已存在', 'error');
+                return;
+            }
+            _pricingData[mid] = {
+                model_id: mid,
+                display_name: mid,
+                input_cost_per_million: 0,
+                output_cost_per_million: 0,
+                cache_read_cost_per_million: 0,
+                cache_creation_cost_per_million: 0,
+            };
+            renderPricingList();
+        }
+
+        function removePricingRow(model_id) {
+            delete _pricingData[model_id];
+            renderPricingList();
+        }
+
+        function savePricing() {
+            var list = Object.values(_pricingData).map(function(p) {
+                return {
+                    model_id: p.model_id,
+                    display_name: p.display_name || p.model_id,
+                    input_cost_per_million: parseFloat(p.input_cost_per_million) || 0,
+                    output_cost_per_million: parseFloat(p.output_cost_per_million) || 0,
+                    cache_read_cost_per_million: parseFloat(p.cache_read_cost_per_million) || 0,
+                    cache_creation_cost_per_million: parseFloat(p.cache_creation_cost_per_million) || 0,
+                };
+            });
+            api('/usage/pricing', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(list)
+            })
+            .then(function(r) {
+                if (r.ok) { showToast('定价已保存'); loadPricing(); }
+                else { return r.json().then(function(e) { throw new Error(e.detail || '保存失败'); }); }
+            })
+            .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
+        // --- Provider 健康监控 ---
+
+        function loadHealth() {
+            api('/health/status')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var tbody = document.getElementById('health-table-body');
+                    var items = data.health || [];
+                    tbody.textContent = '';
+                    if (items.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="6" style="padding:1rem;color:var(--text-secondary);text-align:center">暂无数据</td></tr>';
+                        return;
+                    }
+                    items.forEach(function(h) {
+                        var statusIcon = {healthy: '\u{1F7E2}', degraded: '\u{1F7E1}', unhealthy: '\u{1F534}'}[h.status] || '⚪';
+                        var circuitIcon = {closed: '✅', open: '⚡', half_open: '\u{1F504}'}[h.circuit_state] || '⚪';
+                        var tr = document.createElement('tr');
+                        tr.style.cssText = 'border-bottom:1px solid var(--border)';
+                        tr.innerHTML =
+                            '<td style="padding:0.5rem;font-weight:600">' + h.provider_name + '</td>' +
+                            '<td style="padding:0.5rem">' + statusIcon + ' ' + h.status + '</td>' +
+                            '<td style="padding:0.5rem">' + (h.last_latency_ms || 0) + 'ms (avg ' + (h.avg_latency_ms || 0) + 'ms)</td>' +
+                            '<td style="padding:0.5rem">' + (h.consecutive_failures || 0) + '</td>' +
+                            '<td style="padding:0.5rem">' + circuitIcon + ' ' + h.circuit_state + '</td>' +
+                            '<td style="padding:0.5rem">' +
+                            '<button class="btn btn-secondary btn-sm" onclick="resetCircuit(\'' + h.provider_name + '\')">重置</button>' +
+                            '</td>';
+                        tbody.appendChild(tr);
+                    });
+                })
+                .catch(function(err) { console.error('health load failed', err); });
+        }
+
+        function resetCircuit(name) {
+            api('/health/' + name + '/reset', { method: 'POST' })
+                .then(function(r) {
+                    if (r.ok) { showToast('熔断器已重置'); loadHealth(); }
+                    else { showToast('重置失败', 'error'); }
+                })
+                .catch(function(err) { showToast(err.message, 'error'); });
+        }
+
+        // --- 用量修剪 ---
+
+        function loadRollupSetting() {
+            api('/settings/rollup')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    document.getElementById('settings-rollup-days').value = data.retention_days || 30;
+                });
+        }
+
+        function saveRollupSetting() {
+            var days = parseInt(document.getElementById('settings-rollup-days').value) || 30;
+            api('/settings/rollup', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ retention_days: days })
+            })
+            .then(function(r) {
+                if (r.ok) { showToast('保留天数已更新为 ' + days + ' 天'); }
+                else { showToast('保存失败', 'error'); }
+            });
+        }
+
+        // --- 配置导出/导入 ---
+
+        function exportConfig() {
+            window.open('/api/export', '_blank');
+        }
+
+        function importConfig(input) {
+            if (!input.files || !input.files[0]) return;
+            if (!confirm('导入将覆盖当前所有配置，是否继续？')) { input.value = ''; return; }
+            var reader = new FileReader();
+            reader.onload = function(e) {
+                var data;
+                try { data = JSON.parse(e.target.result); }
+                catch (err) { showToast('JSON 无效', 'error'); input.value = ''; return; }
+                api('/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                })
+                .then(function(r) {
+                    if (r.ok) { showToast('配置已导入并重载'); loadSettings(); }
+                    else { return r.json().then(function(e) { throw new Error(e.error || '导入失败'); }); }
+                })
+                .catch(function(err) { showToast(err.message, 'error'); });
+            };
+            reader.readAsText(input.files[0]);
+            input.value = '';
+        }
+
         // --- 初始化由认证流程触发 ---
 
         // --- SSO 自动登录 ---
+        function _applyAdminState(isAdmin) {
+            _currentUserIsAdmin = !!isAdmin;
+            if (!_currentUserIsAdmin) {
+                // CSS 隐藏所有操作按钮
+                var style = document.createElement('style');
+                style.id = 'viewer-override';
+                style.textContent = [
+                    '.nav-tab[data-tab="settings"] { display: none !important; }',
+                    '#btn-save-settings { display: none !important; }',
+                    'td .actions { display: none !important; }',
+                    'td > .btn { display: none !important; }',
+                    '.card-header .btn { display: none !important; }',
+                    'th:first-child, td:first-child { display: none !important; }',
+                    '.header-right .btn-secondary { display: none !important; }',
+                ].join('\n');
+                document.head.appendChild(style);
+                // 拦截模态框打开
+                var origOpen = window.openProviderModal;
+                window.openProviderModal = function() { showToast('查看者无权操作', 'error'); };
+                window.openAddModelModal = function() { showToast('查看者无权操作', 'error'); };
+                window.editModel = function() { showToast('查看者无权操作', 'error'); };
+                window.deleteModel = function() { showToast('查看者无权操作', 'error'); };
+                window.deleteProvider = function() { showToast('查看者无权操作', 'error'); };
+                window.testProvider = function() { showToast('查看者无权操作', 'error'); };
+                window.testModel = function() {};
+                window.saveProvider = function() { showToast('查看者无权操作', 'error'); };
+                window.submitAddModel = function() { showToast('查看者无权操作', 'error'); };
+                window.addModel = function() { showToast('查看者无权操作', 'error'); };
+                window.removeModel = function() { showToast('查看者无权操作', 'error'); };
+                window.deleteSelectedModels = function() { showToast('查看者无权操作', 'error'); };
+                window.testSelectedModels = function() { showToast('查看者无权操作', 'error'); };
+            }
+        }
+
         if (window.location.search.indexOf('sso=1') !== -1) {
             fetch(API_BASE + '/yz/user')
                 .then(function(r) { return r.json(); })
@@ -1258,6 +1588,7 @@
                         sessionStorage.setItem('ccProxyToken', authToken);
                         window.history.replaceState(null, '', '/');
                         showApp();
+                        _applyAdminState(data.is_admin);
                         showToast('欢迎，' + data.display_name, 'success');
                     } else {
                         showToast('SSO 登录失败，请重试', 'error');
@@ -1273,7 +1604,113 @@
                         authToken = 'sso';
                         sessionStorage.setItem('ccProxyToken', authToken);
                         showApp();
+                        _applyAdminState(data.is_admin);
                     }
                 })
                 .catch(function() {});
+        }
+
+        // --- 使用量统计 ---
+
+        var _usageLogPage = 1;
+
+        function loadUsage() {
+            loadUsageSummary();
+            loadUsageTrend();
+            _usageLogPage = 1;
+            loadUsageLogs();
+        }
+
+        function loadUsageSummary() {
+            var days = document.getElementById('usage-days').value || '30';
+            api('/usage/summary?days=' + days)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    document.getElementById('usage-total-requests').textContent = (data.total_requests || 0).toLocaleString();
+                    document.getElementById('usage-total-tokens').textContent = (data.total_tokens || 0).toLocaleString();
+                    document.getElementById('usage-cache-rate').textContent = (data.cache_hit_rate || 0) + '%';
+                    document.getElementById('usage-cost').textContent = '$ ' + (data.estimated_cost_usd || 0).toFixed(4);
+                    // 未定价提示
+                    var unpricedDiv = document.getElementById('usage-unpriced');
+                    if (unpricedDiv) {
+                        if (data.unpriced_models && data.unpriced_models.length > 0) {
+                            unpricedDiv.style.display = '';
+                            unpricedDiv.textContent = '⚠ ' + (data.unpriced_tokens || 0).toLocaleString()
+                                + ' token 未计入（' + data.unpriced_models.join(', ') + ' 缺定价）';
+                        } else {
+                            unpricedDiv.style.display = 'none';
+                        }
+                    }
+                })
+                .catch(function(err) { console.error('usage summary failed', err); });
+        }
+
+        function loadUsageTrend() {
+            var days = document.getElementById('usage-days').value || '7';
+            api('/usage/trend?days=' + days)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var container = document.getElementById('usage-trend-chart');
+                    var trend = data.trend || [];
+                    if (!trend.length) {
+                        container.innerHTML = '<div style="color:var(--text-secondary);text-align:center;width:100%">暂无数据</div>';
+                        return;
+                    }
+                    var maxReq = Math.max.apply(null, trend.map(function(d) { return d.requests; }));
+                    maxReq = Math.max(maxReq, 1);
+                    var html = '';
+                    trend.forEach(function(d) {
+                        var h = Math.max(4, Math.round(d.requests / maxReq * 140));
+                        var dayLabel = d.date ? d.date.substring(5) : '';
+                        var cacheRate = d.cache_hit_rate || 0;
+                        var bg = cacheRate > 30 ? 'var(--success)' : cacheRate > 10 ? 'var(--warning)' : 'var(--primary)';
+                        html += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:28px">' +
+                            '<div style="font-size:0.7rem;color:var(--text-secondary)">' + d.requests + '</div>' +
+                            '<div style="width:100%;max-width:40px;height:' + h + 'px;background:' + bg + ';border-radius:3px 3px 0 0" title="' + dayLabel + ': ' + d.requests + ' 请求, 缓存命中率 ' + cacheRate + '%"></div>' +
+                            '<div style="font-size:0.65rem;color:var(--text-secondary)">' + dayLabel + '</div>' +
+                        '</div>';
+                    });
+                    container.innerHTML = html;
+                })
+                .catch(function(err) { console.error('usage trend failed', err); });
+        }
+
+        function loadUsageLogs() {
+            var page = _usageLogPage;
+            var size = 15;
+            api('/usage/logs?page=' + page + '&size=' + size)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var tbody = document.getElementById('usage-logs-body');
+                    var logs = data.logs || [];
+                    if (!logs.length) {
+                        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:2rem">暂无请求日志</td></tr>';
+                        document.getElementById('usage-logs-pagination').innerHTML = '';
+                        return;
+                    }
+                    var html = '';
+                    logs.forEach(function(l) {
+                        var t = l.created_at ? l.created_at.replace('T', ' ').substring(0, 19) : '-';
+                        html += '<tr style="border-bottom:1px solid var(--border)">' +
+                            '<td style="padding:0.4rem 0.5rem">' + escapeHtml(t) + '</td>' +
+                            '<td style="padding:0.4rem 0.5rem"><span class="badge badge-primary">' + escapeHtml(l.model_id || '-') + '</span></td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (l.input_tokens || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (l.output_tokens || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (l.cache_read_tokens || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (l.cache_creation_tokens || 0).toLocaleString() + '</td>' +
+                            '<td style="text-align:right;padding:0.4rem 0.5rem">' + (l.latency_ms || 0) + 'ms</td>' +
+                        '</tr>';
+                    });
+                    tbody.innerHTML = html;
+
+                    // 分页
+                    var total = data.total || 0;
+                    var totalPages = Math.ceil(total / size) || 1;
+                    var pagHtml = '';
+                    if (page > 1) pagHtml += '<button class="btn btn-secondary btn-sm" onclick="_usageLogPage=' + (page-1) + ';loadUsageLogs()">上一页</button>';
+                    pagHtml += '<span style="color:var(--text-secondary);font-size:0.85rem">' + page + ' / ' + totalPages + ' (' + total + ' 条)</span>';
+                    if (page < totalPages) pagHtml += '<button class="btn btn-secondary btn-sm" onclick="_usageLogPage=' + (page+1) + ';loadUsageLogs()">下一页</button>';
+                    document.getElementById('usage-logs-pagination').innerHTML = pagHtml;
+                })
+                .catch(function(err) { console.error('usage logs failed', err); });
         }
