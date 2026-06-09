@@ -377,9 +377,9 @@ async def admin_get_settings(request: Request):
         },
         "sso_public_paths": settings.get("sso_public_paths", []),
         "sso_builtin_paths": ["/static/*", "/health", "/api/yz/callback", "/api/yz/logout", "/api/yz/user"],
-        "yz_login_enabled": _os.environ.get("YZ_LOGIN_ENABLED", "").lower() in ("true", "1") or cfg.get("yz_login_enabled", False),
-        "yz_login_url": _os.environ.get("YZ_LOGIN_URL") or cfg.get("yz_login_url", ""),
-        "cc_proxy_callback_url": _os.environ.get("CC_PROXY_CALLBACK_URL") or cfg.get("cc_proxy_callback_url", ""),
+        "yz_login_enabled": (lambda v: v if isinstance(v, bool) else str(v).lower() in ("true", "1"))(settings.get("yz_login_enabled", _os.environ.get("YZ_LOGIN_ENABLED", ""))) or cfg.get("yz_login_enabled", False),
+        "yz_login_url": settings.get("yz_login_url") or _os.environ.get("YZ_LOGIN_URL") or cfg.get("yz_login_url", ""),
+        "cc_proxy_callback_url": settings.get("cc_proxy_callback_url") or _os.environ.get("CC_PROXY_CALLBACK_URL") or cfg.get("cc_proxy_callback_url", ""),
         "model_map": db_get_model_map(),
         "sso_admin_users": settings.get("sso_admin_users", []),
         "users": db_list_users(),
@@ -402,6 +402,15 @@ async def admin_save_settings(request: Request):
         db_set_model_map_all(data["model_map"])
     if "sso_admin_users" in data:
         db_set_setting("sso_admin_users", data["sso_admin_users"])
+
+    # SSO 配置（保存到 settings 表，覆盖环境变量）
+    for key, db_key in [
+        ("yz_login_enabled", "yz_login_enabled"),
+        ("yz_login_url", "yz_login_url"),
+        ("cc_proxy_callback_url", "cc_proxy_callback_url"),
+    ]:
+        if key in data:
+            db_set_setting(db_key, data[key])
 
     get_registry().reload()
     return {"success": True, "message": "配置已保存"}
