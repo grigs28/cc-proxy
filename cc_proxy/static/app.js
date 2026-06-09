@@ -1517,6 +1517,33 @@
         // --- 使用量统计 ---
 
         var _usageLogPage = 1;
+        var _usageLoading = 0;  // 正在加载的请求计数
+
+        function _usageStartLoad() {
+            _usageLoading++;
+            var btn = document.getElementById('btn-refresh-usage');
+            var icon = document.getElementById('refresh-icon');
+            if (btn) btn.disabled = true;
+            if (icon) icon.textContent = '⏳';
+        }
+
+        function _usageEndLoad() {
+            _usageLoading--;
+            if (_usageLoading <= 0) {
+                _usageLoading = 0;
+                var btn = document.getElementById('btn-refresh-usage');
+                var icon = document.getElementById('refresh-icon');
+                if (btn) btn.disabled = false;
+                if (icon) icon.textContent = '🔄';
+                // 更新时间戳
+                var now = new Date();
+                var ts = now.getHours().toString().padStart(2,'0') + ':' +
+                         now.getMinutes().toString().padStart(2,'0') + ':' +
+                         now.getSeconds().toString().padStart(2,'0');
+                var el = document.getElementById('usage-updated-at');
+                if (el) el.textContent = '最后更新: ' + ts;
+            }
+        }
 
         function loadUsage() {
             loadUsageSummary();
@@ -1533,19 +1560,29 @@
         }
 
         function loadUsageSummary() {
+            _usageStartLoad();
             var days = document.getElementById('usage-days').value || '30';
             api('/usage/summary?days=' + days)
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
-                    document.getElementById('usage-total-requests').textContent = (data.total_requests || 0).toLocaleString();
-                    document.getElementById('usage-total-tokens').textContent = (data.total_tokens || 0).toLocaleString();
-                    document.getElementById('usage-cache-rate').textContent = (data.cache_hit_rate || 0) + '%';
-                    document.getElementById('usage-cost').textContent = '$ ' + (data.estimated_cost_usd || 0).toFixed(4);
+                    var el = document.getElementById('usage-total-requests');
+                    if (el) { el.textContent = (data.total_requests || 0).toLocaleString(); el.style.transition = '0.15s'; el.style.color = 'var(--accent)'; setTimeout(function() { el.style.color = ''; }, 600); }
+                    el = document.getElementById('usage-total-tokens');
+                    if (el) { el.textContent = (data.total_tokens || 0).toLocaleString(); el.style.transition = '0.15s'; el.style.color = 'var(--accent)'; setTimeout(function() { el.style.color = ''; }, 600); }
+                    el = document.getElementById('usage-cache-rate');
+                    if (el) { el.textContent = (data.cache_hit_rate || 0) + '%'; el.style.transition = '0.15s'; el.style.color = 'var(--accent)'; setTimeout(function() { el.style.color = ''; }, 600); }
+                    el = document.getElementById('usage-cost');
+                    if (el) { el.textContent = '$ ' + (data.estimated_cost_usd || 0).toFixed(4); el.style.transition = '0.15s'; el.style.color = 'var(--accent)'; setTimeout(function() { el.style.color = ''; }, 600); }
+                    _usageEndLoad();
                 })
-                .catch(function(err) { console.error('usage summary failed', err); });
+                .catch(function(err) {
+                    console.error('usage summary failed', err);
+                    _usageEndLoad();
+                });
         }
 
         function loadUsageTrend() {
+            _usageStartLoad();
             var days = document.getElementById('usage-days').value || '7';
             api('/usage/trend?days=' + days)
                 .then(function(r) { return r.json(); })
@@ -1554,6 +1591,7 @@
                     var trend = data.trend || [];
                     if (!trend.length) {
                         container.innerHTML = '<div style="color:var(--text-secondary);text-align:center;width:100%">暂无数据</div>';
+                        _usageEndLoad();
                         return;
                     }
                     var maxReq = Math.max.apply(null, trend.map(function(d) { return d.requests; }));
@@ -1587,8 +1625,9 @@
                     if (trend.length > 30) {
                         container.scrollLeft = container.scrollWidth;
                     }
+                    _usageEndLoad();
                 })
-                .catch(function(err) { console.error('usage trend failed', err); });
+                .catch(function(err) { console.error('usage trend failed', err); _usageEndLoad(); });
         }
 
         // ============================================================
@@ -1622,6 +1661,7 @@
         }
 
         function loadModelStats() {
+            _usageStartLoad();
             var days = document.getElementById('usage-days').value || '30';
             api('/usage/models?days=' + days)
                 .then(function(r) { return r.json(); })
@@ -1630,6 +1670,7 @@
                     var models = data.models || [];
                     if (!models.length) {
                         tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:2rem">暂无数据</td></tr>';
+                        _usageEndLoad();
                         return;
                     }
                     var html = '';
@@ -1647,11 +1688,13 @@
                         '</tr>';
                     });
                     tbody.innerHTML = html;
+                    _usageEndLoad();
                 })
-                .catch(function(err) { console.error('model stats failed', err); });
+                .catch(function(err) { console.error('model stats failed', err); _usageEndLoad(); });
         }
 
         function loadProviderStats() {
+            _usageStartLoad();
             var days = document.getElementById('usage-days').value || '30';
             api('/usage/providers?days=' + days)
                 .then(function(r) { return r.json(); })
@@ -1660,6 +1703,7 @@
                     var providers = data.providers || [];
                     if (!providers.length) {
                         tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:2rem">暂无数据</td></tr>';
+                        _usageEndLoad();
                         return;
                     }
                     var html = '';
@@ -1676,11 +1720,13 @@
                         '</tr>';
                     });
                     tbody.innerHTML = html;
+                    _usageEndLoad();
                 })
-                .catch(function(err) { console.error('provider stats failed', err); });
+                .catch(function(err) { console.error('provider stats failed', err); _usageEndLoad(); });
         }
 
         function loadUsageLogs(goPage) {
+            _usageStartLoad();
             var page = goPage || _usageLogPage;
             var size = 15;
             var model = document.getElementById('usage-filter-model') ? document.getElementById('usage-filter-model').value.trim() : '';
@@ -1696,6 +1742,7 @@
                     if (!logs.length) {
                         tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:2rem">暂无请求日志</td></tr>';
                         document.getElementById('usage-logs-pagination').innerHTML = '';
+                        _usageEndLoad();
                         return;
                     }
                     var html = '';
@@ -1723,6 +1770,7 @@
                     pagHtml += '<span style="color:var(--text-secondary);font-size:0.85rem">' + page + ' / ' + totalPages + ' (' + total + ' 条)</span>';
                     if (page < totalPages) pagHtml += '<button class="btn btn-secondary btn-sm" onclick="loadUsageLogs(' + (page + 1) + ')">下一页</button>';
                     document.getElementById('usage-logs-pagination').innerHTML = pagHtml;
+                    _usageEndLoad();
                 })
-                .catch(function(err) { console.error('usage logs failed', err); });
+                .catch(function(err) { console.error('usage logs failed', err); _usageEndLoad(); });
         }

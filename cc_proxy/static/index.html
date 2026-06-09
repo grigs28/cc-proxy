@@ -191,7 +191,10 @@
                                 <option value="30" selected>近 30 天</option>
                                 <option value="90">近 90 天</option>
                             </select>
-                            <button class="btn btn-secondary btn-sm" onclick="loadUsage()">刷新</button>
+                            <button class="btn btn-secondary btn-sm" id="btn-refresh-usage" onclick="loadUsage()">
+                                <span id="refresh-icon">🔄</span> 刷新
+                            </button>
+                            <span id="usage-updated-at" style="font-size:0.78rem;color:var(--text-muted);margin-left:0.25rem"></span>
                         </div>
                     </div>
                     <!-- 汇总卡片 -->
