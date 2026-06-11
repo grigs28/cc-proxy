@@ -894,17 +894,19 @@ def db_insert_request_log(data: dict[str, Any]) -> None:
     conn = get_conn()
     try:
         cur = conn.cursor()
+        from datetime import datetime
         cur.execute("""
             INSERT INTO request_logs (request_id, model_id, provider_name,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                latency_ms, status_code, is_streaming)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                latency_ms, status_code, is_streaming, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             data["request_id"], data["model_id"], data.get("provider_name", ""),
             data.get("input_tokens", 0), data.get("output_tokens", 0),
             data.get("cache_read_tokens", 0), data.get("cache_creation_tokens", 0),
             data.get("latency_ms", 0), data.get("status_code", 200),
             data.get("is_streaming", False),
+            datetime.now(),
         ))
         conn.commit()
         cur.close()
