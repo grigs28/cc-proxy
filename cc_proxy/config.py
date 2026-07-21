@@ -21,7 +21,7 @@ _ENV_VAR_PATTERN = re.compile(r'\$\{([^:}]+)(?::-([^}]*))?\}')
 
 def is_default_password() -> bool:
     """检查是否使用默认密码"""
-    pw = _config.get("admin_password", "admin")
+    pw = os.environ.get("ADMIN_PASSWORD") or _config.get("admin_password", "admin")
     return pw == "admin" or pw == _hash_password("admin")
 
 
@@ -121,15 +121,15 @@ def get_server_config() -> dict[str, Any]:
 
 
 def get_db_config() -> dict[str, Any]:
-    """获取数据库连接配置"""
+    """获取数据库连接配置 — 优先环境变量，其次 .env 文件"""
     cfg = get_config()
     db = cfg.get("database", {})
     return {
-        "host": db.get("host", "192.168.0.98"),
-        "port": db.get("port", 5432),
-        "name": db.get("name", db.get("database", "cc_proxy")),
-        "user": db.get("user", "grigs"),
-        "password": db.get("password", ""),
+        "host": os.environ.get("DB_HOST") or db.get("host", "192.168.0.98"),
+        "port": int(os.environ.get("DB_PORT") or db.get("port", 5432)),
+        "name": os.environ.get("DB_NAME") or db.get("name", db.get("database", "cc_proxy")),
+        "user": os.environ.get("DB_USER") or db.get("user", "grigs"),
+        "password": os.environ.get("DB_PASSWORD") or db.get("password", ""),
     }
 
 

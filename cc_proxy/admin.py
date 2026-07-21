@@ -383,6 +383,7 @@ async def admin_get_settings(request: Request):
         "model_map": db_get_model_map(),
         "sso_admin_users": settings.get("sso_admin_users", []),
         "users": db_list_users(),
+        "auto_refresh_interval": settings.get("auto_refresh_interval", 15),
     }
 
 
@@ -411,6 +412,9 @@ async def admin_save_settings(request: Request):
     ]:
         if key in data:
             db_set_setting(db_key, data[key])
+
+    if "auto_refresh_interval" in data:
+        db_set_setting("auto_refresh_interval", data["auto_refresh_interval"])
 
     get_registry().reload()
     return {"success": True, "message": "配置已保存"}

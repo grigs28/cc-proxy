@@ -11,10 +11,16 @@ services:
       - CC_PORT=5566
       - CC_LOG_DIR=/app/log
       - TZ=Asia/Shanghai
+      - DB_HOST=192.168.0.39
+      - DB_PORT=5432
+      - DB_NAME=cc_proxy
+      - DB_USER=grigs
+      - DB_PASSWORD=Slnwg123$
+      - ADMIN_PASSWORD=Slnwg123$
+      - YZ_LOGIN_ENABLED=true
+      - YZ_LOGIN_URL=http://192.168.0.18:5551
+      - CC_PROXY_CALLBACK_URL=http://192.168.0.19:5566/api/yz/callback
     volumes:
-      - ../.env:/app/.env
-      - ../cc_proxy:/app/cc_proxy
-      - ../main.py:/app/main.py
       - ../log:/app/log
       - /etc/localtime:/etc/localtime:ro
     restart: unless-stopped

@@ -28,6 +28,7 @@ class Model:
     supported_formats: list[str] = field(default_factory=lambda: ["openai", "anthropic"])
     auth_style: str = "auto"
     strip_fields: bool = False
+    cache_enabled: bool = True
 
     @staticmethod
     def _from_dict(data: dict[str, Any]) -> "Model":
@@ -38,6 +39,7 @@ class Model:
             supported_formats=data.get("supported_formats", ["openai", "anthropic"]),
             auth_style=data.get("auth_style", "auto"),
             strip_fields=data.get("strip_fields", False),
+            cache_enabled=data.get("cache_enabled", True),
         )
 
 
@@ -116,7 +118,7 @@ class Provider:
             "models": [
                 {"id": m.id, "display_name": m.display_name, "alias": m.alias,
                  "supported_formats": m.supported_formats, "auth_style": m.auth_style,
-                 "strip_fields": m.strip_fields}
+                 "strip_fields": m.strip_fields, "cache_enabled": m.cache_enabled}
                 for m in self.models
             ],
         }
@@ -205,6 +207,7 @@ class ProviderRegistry:
                     "supported_formats": model.supported_formats,
                     "auth_style": model.auth_style,
                     "strip_fields": model.strip_fields,
+                    "cache_enabled": model.cache_enabled,
                 })
         return models
 

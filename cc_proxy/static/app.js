@@ -138,7 +138,8 @@
                 if (tab.dataset.tab === 'providers') loadProviders();
                 if (tab.dataset.tab === 'models') { loadModels(); }
                 if (tab.dataset.tab === 'dashboard') loadDashboard();
-                if (tab.dataset.tab === 'usage') { loadUsage(); resetUsageSubTabs(); }
+                if (tab.dataset.tab === 'usage') { loadUsage(); resetUsageSubTabs(); if (document.getElementById('usage-auto-refresh').checked) startAutoRefresh(); }
+                else { stopAutoRefresh(); }
                 if (tab.dataset.tab === 'settings') loadSettings();
                 // 保存配置按钮只在系统配置 tab 显示
                 var btnSave = document.getElementById('btn-save-settings');
@@ -1117,6 +1118,9 @@
                     document.getElementById('settings-yz-enabled').checked = !!data.yz_login_enabled;
                     document.getElementById('settings-yz-url').value = data.yz_login_url || '';
                     document.getElementById('settings-yz-callback').value = data.cc_proxy_callback_url || '';
+                    _autoRefreshInterval = data.auto_refresh_interval || 15;
+                    var arEl = document.getElementById('settings-auto-refresh-interval');
+                    if (arEl) arEl.value = _autoRefreshInterval;
                     _settingsCustomPaths = ((data.server && data.server.passthrough_paths) || []).slice();
                     _settingsPublicPaths = (data.sso_public_paths || []).slice();
                     _settingsModelMap = {};
@@ -1338,6 +1342,7 @@
                 yz_login_enabled: document.getElementById('settings-yz-enabled').checked,
                 yz_login_url: document.getElementById('settings-yz-url').value.trim(),
                 cc_proxy_callback_url: document.getElementById('settings-yz-callback').value.trim(),
+                auto_refresh_interval: parseInt(document.getElementById('settings-auto-refresh-interval').value) || 15,
                 model_map: _settingsModelMap,
             };
             api('/settings', {
@@ -1518,6 +1523,30 @@
 
         var _usageLogPage = 1;
         var _usageLoading = 0;  // 正在加载的请求计数
+        var _autoRefreshTimer = null;
+        var _autoRefreshInterval = 15;  // 默认 15 秒
+
+        function toggleAutoRefresh() {
+            if (document.getElementById('usage-auto-refresh').checked) {
+                startAutoRefresh();
+            } else {
+                stopAutoRefresh();
+            }
+        }
+
+        function startAutoRefresh() {
+            stopAutoRefresh();
+            _autoRefreshTimer = setInterval(function() {
+                loadUsage();
+            }, _autoRefreshInterval * 1000);
+        }
+
+        function stopAutoRefresh() {
+            if (_autoRefreshTimer) {
+                clearInterval(_autoRefreshTimer);
+                _autoRefreshTimer = null;
+            }
+        }
 
         function _usageStartLoad() {
             _usageLoading++;

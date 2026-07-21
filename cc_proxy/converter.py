@@ -322,7 +322,9 @@ def sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
-def build_message_start_event(model: str, msg_id: str | None = None) -> str:
+def build_message_start_event(model: str, msg_id: str | None = None,
+                              input_tokens: int = 0, cache_read_tokens: int = 0,
+                              cache_creation_tokens: int = 0) -> str:
     """Build a message_start SSE event."""
     return sse_event("message_start", {
         "type": "message_start",
@@ -334,7 +336,12 @@ def build_message_start_event(model: str, msg_id: str | None = None) -> str:
             "model": model,
             "stop_reason": None,
             "stop_sequence": None,
-            "usage": {"input_tokens": 0, "output_tokens": 0},
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": 0,
+                "cache_read_input_tokens": cache_read_tokens,
+                "cache_creation_input_tokens": cache_creation_tokens,
+            },
         },
     })
 

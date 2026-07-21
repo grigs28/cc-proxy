@@ -119,3 +119,7 @@ nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
+
+# Playwright MCP 测试产物
+.playwright-mcp/
+usage-page.png
