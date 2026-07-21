@@ -55,6 +55,7 @@ class Provider:
     base_url_openai: str = ""
     base_url_anthropic: str = ""
     base_url: str = ""
+    prompt_cache_key: str = ""  # ""=不注入, "session"=按会话派生, 其他=固定值
 
     @staticmethod
     def _normalize_base_url(url: str) -> str:
@@ -104,6 +105,7 @@ class Provider:
             supported_formats=fmts,
             base_url_openai=base_url_openai,
             base_url_anthropic=base_url_anthropic,
+            prompt_cache_key=data.get("prompt_cache_key", ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -115,6 +117,7 @@ class Provider:
             "supported_formats": self.supported_formats,
             "base_url_openai": self.base_url_openai,
             "base_url_anthropic": self.base_url_anthropic,
+            "prompt_cache_key": self.prompt_cache_key,
             "models": [
                 {"id": m.id, "display_name": m.display_name, "alias": m.alias,
                  "supported_formats": m.supported_formats, "auth_style": m.auth_style,
@@ -171,6 +174,7 @@ class ProviderRegistry:
                     base_url_openai=p.get("base_url_openai", ""),
                     base_url_anthropic=p.get("base_url_anthropic", ""),
                     base_url=p.get("base_url", ""),
+                    prompt_cache_key=p.get("prompt_cache_key", ""),
                 ))
             self._model_map = {}
             logger.info(f"从数据库加载了 {len(self._providers)} 个提供商")

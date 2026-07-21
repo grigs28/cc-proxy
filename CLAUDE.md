@@ -65,8 +65,9 @@ OpenAI 客户端 → /v1/chat/completions → 找到 provider → 格式匹配�
 | `auth.py` | 密码认证：Token 管理（内存，30分钟过期）、密码强度验证、认证中间件 |
 | `urls.py` | URL 构建：`build_openai_url` 智能拼接（不重复版本路径）、`dedupe_base_url_path` 去重 |
 | `stats.py` | 请求统计：内存计数 + 异步写入数据库 |
-| `cache.py` | Anthropic Prompt Cache 注入：自动在 tools/system/messages 中插入 `cache_control` 标记（最多 4 个断点） |
+| `cache.py` | Anthropic Prompt Cache 注入：自动在 tools/system/messages 中插入 `cache_control` 标记（最多 4 个断点）；OpenAI 格式上游的 `prompt_cache_key` 派生与注入 |
 | `usage.py` | Token 使用量采集：从 Anthropic/OpenAI 响应中提取 token（含缓存 token），`SseUsageCollector` 窥探流式 SSE，异步写入数据库 |
+| `quota.py` | 厂商配额查询：按 base_url 分发 Kimi/智谱/MiniMax 配额端点，统一返回 tiers 结构（参考 cc-switch） |
 | `yz_auth/` | 宜众 SSO 登录（可选模块，条件加载） |
 
 ### 数据流
@@ -102,6 +103,8 @@ OpenAI 客户端 → /v1/chat/completions → 找到 provider → 格式匹配�
 - `supported_formats` 存储为逗号分隔字符串（数据库）和 list（内存），`_parse_formats()` 转换
 - `auth_style` 控制向 Anthropic 上游发送认证的方式：`auto`（同时发 x-api-key 和 Bearer）、`bearer`、`x-api-key`
 - `strip_fields` 为 true 时过滤掉 `thinking`、`metadata` 等非核心字段，防止上游报错
+- `providers.prompt_cache_key` 控制 OpenAI 格式上游的缓存亲和注入：`''`=不注入（默认）、`'session'`=从请求 `metadata.user_id` 的 `_session_` 后缀派生、其他值=固定 key；仅注入 OpenAI 格式请求，Anthropic 直通不注入
+- 配额查询端点 `GET /api/providers/{name}/quota`，按 provider base_url 自动识别 Kimi/智谱/MiniMax，其余厂商返回 `unsupported`
 - 版本号以 `proxy.py` 中的 `VERSION` 为准（当前 `"0.4.0"`），`__init__.py` 中的 `__version__` 可能滞后
 
 ## 配置

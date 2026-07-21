@@ -1,0 +1,26 @@
+CC-Proxy
+========
+
+Claude Code 通用模型网关。
+
+第三方参考声明
+--------------
+
+本项目以下功能的设计参考了 cc-switch 项目
+（https://github.com/farion1231/cc-switch）：
+
+- prompt_cache_key 注入策略（provider 显式配置 > 请求会话派生 > 不注入），
+  用于提升 OpenAI 格式上游的缓存路由亲和与命中率（cc_proxy/cache.py）
+- 厂商配额查询端点与响应结构归一化（Kimi / 智谱 / MiniMax），
+  见 cc_proxy/quota.py
+
+变更记录
+--------
+
+2026-07-21  新增 prompt_cache_key 注入（providers.prompt_cache_key 列，
+            ''=不注入 / 'session'=按会话派生 / 其他=固定值）；
+            新增 quota.py 厂商配额查询及管理端点 /api/providers/{name}/quota；
+            管理面板 provider 表单增加 Prompt Cache Key 字段、列表增加配额查询。
+2026-07-20  数据库从 192.168.0.98 迁移至 192.168.0.39；
+            新增 cache.py（Prompt Cache 注入）、usage.py（Token 用量采集）、
+            统计页面。

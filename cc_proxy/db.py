@@ -50,6 +50,7 @@ def _create_tables() -> None:
                 base_url_openai TEXT DEFAULT '',
                 base_url_anthropic TEXT DEFAULT '',
                 base_url TEXT DEFAULT '',
+                prompt_cache_key TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -152,6 +153,13 @@ def _migrate_add_columns():
             logger.info("数据库迁移：已添加 cache_enabled 列")
         except Exception:
             conn.rollback()  # 列已存在，忽略
+        # 添加 prompt_cache_key 列
+        try:
+            cur.execute("ALTER TABLE providers ADD COLUMN prompt_cache_key TEXT DEFAULT ''")
+            conn.commit()
+            logger.info("数据库迁移：已添加 prompt_cache_key 列")
+        except Exception:
+            conn.rollback()  # 列已存在，忽略
         cur.close()
     finally:
         put_conn(conn)
@@ -181,12 +189,12 @@ def db_get_providers() -> list[dict[str, Any]]:
         cur = conn.cursor()
         cur.execute("""
             SELECT id, name, api_key, timeout, provider_type, supported_formats,
-                   base_url_openai, base_url_anthropic, base_url
+                   base_url_openai, base_url_anthropic, base_url, prompt_cache_key
             FROM providers ORDER BY id
         """)
         providers = []
         for row in cur.fetchall():
-            pid, name, api_key, timeout, ptype, fmts_str, url_o, url_a, url_b = row
+            pid, name, api_key, timeout, ptype, fmts_str, url_o, url_a, url_b, pck = row
             models = _get_models_by_provider(cur, pid)
             providers.append({
                 "id": pid,
@@ -198,6 +206,7 @@ def db_get_providers() -> list[dict[str, Any]]:
                 "base_url_openai": url_o or "",
                 "base_url_anthropic": url_a or "",
                 "base_url": url_b or "",
+                "prompt_cache_key": pck or "",
                 "models": models,
             })
         cur.close()
@@ -213,14 +222,14 @@ def db_get_provider(name: str) -> Optional[dict[str, Any]]:
         cur = conn.cursor()
         cur.execute("""
             SELECT id, name, api_key, timeout, provider_type, supported_formats,
-                   base_url_openai, base_url_anthropic, base_url
+                   base_url_openai, base_url_anthropic, base_url, prompt_cache_key
             FROM providers WHERE name = %s
         """, (name,))
         row = cur.fetchone()
         if not row:
             cur.close()
             return None
-        pid, name, api_key, timeout, ptype, fmts_str, url_o, url_a, url_b = row
+        pid, name, api_key, timeout, ptype, fmts_str, url_o, url_a, url_b, pck = row
         models = _get_models_by_provider(cur, pid)
         cur.close()
         return {
@@ -233,6 +242,7 @@ def db_get_provider(name: str) -> Optional[dict[str, Any]]:
             "base_url_openai": url_o or "",
             "base_url_anthropic": url_a or "",
             "base_url": url_b or "",
+            "prompt_cache_key": pck or "",
             "models": models,
         }
     finally:
@@ -247,14 +257,14 @@ def db_add_provider(data: dict[str, Any]) -> dict[str, Any]:
         fmts = ",".join(data.get("supported_formats", ["openai", "anthropic"]))
         cur.execute("""
             INSERT INTO providers (name, api_key, timeout, provider_type, supported_formats,
-                                    base_url_openai, base_url_anthropic, base_url)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                    base_url_openai, base_url_anthropic, base_url, prompt_cache_key)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
             data["name"], data["api_key"], data.get("timeout", 300),
             data.get("type", "openai"), fmts,
             data.get("base_url_openai", ""), data.get("base_url_anthropic", ""),
-            data.get("base_url", ""),
+            data.get("base_url", ""), data.get("prompt_cache_key", ""),
         ))
         pid = cur.fetchone()[0]
         conn.commit()
@@ -277,7 +287,8 @@ def db_update_provider(name: str, data: dict[str, Any]) -> Optional[dict[str, An
         values = []
         for key, col in [("name", "name"), ("api_key", "api_key"), ("timeout", "timeout"),
                          ("type", "provider_type"), ("base_url_openai", "base_url_openai"),
-                         ("base_url_anthropic", "base_url_anthropic"), ("base_url", "base_url")]:
+                         ("base_url_anthropic", "base_url_anthropic"), ("base_url", "base_url"),
+                         ("prompt_cache_key", "prompt_cache_key")]:
             if key in data:
                 fields.append(f"{col} = %s")
                 values.append(data[key])

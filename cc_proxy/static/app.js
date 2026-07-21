@@ -283,6 +283,7 @@
                             '<td><span class="status-indicator" id="status-' + safeName + '"><span class="status-dot" style="background:var(--text-secondary)"></span> 未知</span></td>' +
                             '<td><div class="actions">' +
                             '<button class="btn btn-secondary btn-sm" onclick="testProvider(\'' + safeName + '\')">测试</button>' +
+                            '<button class="btn btn-secondary btn-sm" onclick="toggleQuota(\'' + safeName + '\', this)">配额</button>' +
                             '<button class="btn btn-secondary btn-sm" onclick="editProvider(\'' + safeName + '\')">编辑</button>' +
                             '<button class="btn btn-danger btn-sm" onclick="deleteProvider(\'' + safeName + '\')">删除</button>' +
                             '</div></td>';
@@ -304,6 +305,51 @@
             // Set required attribute based on enabled state
             document.getElementById('provider-url-openai').required = enableOpenai;
             document.getElementById('provider-url-anthropic').required = enableAnthropic;
+        }
+
+        // 配额查询：点击"配额"按钮在 provider 行下方展开/收起配额面板
+        function toggleQuota(name, btn) {
+            var row = btn.closest('tr');
+            var existing = row.nextElementSibling;
+            if (existing && existing.classList.contains('quota-row')) {
+                existing.remove();
+                return;
+            }
+            var quotaTr = document.createElement('tr');
+            quotaTr.className = 'quota-row';
+            quotaTr.innerHTML = '<td colspan="7" style="padding:0.5rem 1rem;color:var(--text-secondary)">查询中...</td>';
+            row.parentNode.insertBefore(quotaTr, row.nextSibling);
+            api('/providers/' + encodeURIComponent(name) + '/quota')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var td = quotaTr.querySelector('td');
+                    if (!data.success) {
+                        td.innerHTML = data.error === 'unsupported'
+                            ? '<span style="color:var(--text-secondary)">该厂商不支持配额查询（目前支持 Kimi/智谱/MiniMax）</span>'
+                            : '<span style="color:var(--danger)">查询失败: ' + escapeHtml(data.error) + '</span>';
+                        return;
+                    }
+                    if (!data.tiers || data.tiers.length === 0) {
+                        td.innerHTML = '<span style="color:var(--text-secondary)">厂商未返回配额数据</span>';
+                        return;
+                    }
+                    td.innerHTML = data.tiers.map(function(t) {
+                        var pct = Math.round(t.utilization);
+                        var color = pct >= 85 ? 'var(--danger)' : (pct >= 60 ? 'var(--warning, #e6a23c)' : 'var(--success, #67c23a)');
+                        var reset = t.resets_at ? ' · 重置: ' + escapeHtml(String(t.resets_at)) : '';
+                        var detail = t.detail ? ' · ' + escapeHtml(t.detail) : '';
+                        return '<div style="display:flex;align-items:center;gap:0.6rem;margin:0.25rem 0">' +
+                            '<span style="min-width:4.5rem">' + escapeHtml(t.name) + '</span>' +
+                            '<div style="flex:1;max-width:260px;height:8px;background:var(--bg-secondary);border-radius:4px;overflow:hidden">' +
+                            '<div style="width:' + pct + '%;height:100%;background:' + color + '"></div></div>' +
+                            '<span style="color:' + color + ';font-weight:600;min-width:3rem">' + pct + '%</span>' +
+                            '<span style="color:var(--text-secondary);font-size:0.85em">' + detail + reset + '</span>' +
+                            '</div>';
+                    }).join('');
+                })
+                .catch(function(err) {
+                    quotaTr.querySelector('td').innerHTML = '<span style="color:var(--danger)">查询失败: ' + escapeHtml(err.message) + '</span>';
+                });
         }
 
         function openProviderModal(provider) {
@@ -328,6 +374,7 @@
             }
             document.getElementById('provider-key').value = isEdit ? provider.api_key : '';
             document.getElementById('provider-timeout').value = isEdit ? provider.timeout : 300;
+            document.getElementById('provider-prompt-cache-key').value = isEdit ? (provider.prompt_cache_key || '') : '';
             document.getElementById('provider-name').disabled = isEdit;
             document.getElementById('provider-modal').classList.add('active');
         }
@@ -380,7 +427,8 @@
                     base_url_anthropic: base_url_anthropic,
                     api_key: api_key,
                     timeout: timeout,
-                    supported_formats: fmts
+                    supported_formats: fmts,
+                    prompt_cache_key: document.getElementById('provider-prompt-cache-key').value.trim()
                 })
             })
             .then(function(r) {

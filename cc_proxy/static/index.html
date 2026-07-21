@@ -465,6 +465,11 @@
                         <label>超时时间 (秒)</label>
                         <input type="number" id="provider-timeout" value="300" min="1">
                     </div>
+                    <div class="form-group">
+                        <label>Prompt Cache Key</label>
+                        <input type="text" id="provider-prompt-cache-key" placeholder="留空=不注入；session=按会话派生；其他=固定值">
+                        <small style="color:var(--text-secondary)">仅对 OpenAI 格式上游注入 prompt_cache_key，同会话 key 稳定可提升缓存命中</small>
+                    </div>
                 </form>
             </div>
             <div class="modal-footer">

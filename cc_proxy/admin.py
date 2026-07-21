@@ -224,6 +224,17 @@ async def admin_delete_provider(name: str, request: Request):
     return {"success": True}
 
 
+@router.get("/api/providers/{name}/quota")
+async def admin_provider_quota(name: str, request: Request):
+    """查询 provider 在厂商侧的配额/余量（Kimi/智谱/MiniMax）"""
+    _check_admin(request)
+    p = get_registry().get_provider(name)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
+    from cc_proxy.quota import query_provider_quota
+    return await query_provider_quota(p)
+
+
 # ============================================================
 # 模型 CRUD
 # ============================================================

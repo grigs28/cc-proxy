@@ -22,6 +22,7 @@ from cc_proxy.client import (
     openai_to_anthropic_streaming,
     stream_openai,
 )
+from cc_proxy.cache import inject_prompt_cache_key, resolve_prompt_cache_key
 from cc_proxy.config import get_config, get_db_config, get_model_map, init_config, is_default_password
 from cc_proxy.converter import convert_request, reverse_convert_request
 from cc_proxy.db import db_get_setting, init_db, migrate_from_yaml
@@ -31,7 +32,7 @@ from cc_proxy.urls import build_openai_url
 
 logger = logging.getLogger("cc-proxy")
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 
 # 通用透传端点列表（可通过 .env server.passthrough_paths 扩展）
 _DEFAULT_PASSTHROUGH_PATHS = [
@@ -138,7 +139,10 @@ async def messages_endpoint(request: Request):
                 return await anthropic_passthrough_non_streaming(body, provider, auth_style, strip, cache_enabled, user_agent)
         else:
             model_map = get_model_map()
+            # 先派生 cache key（metadata 可能在转换/剥离后丢失）
+            cache_key = resolve_prompt_cache_key(provider.prompt_cache_key, body)
             openai_req = convert_request(body, model_map=model_map)
+            inject_prompt_cache_key(openai_req, cache_key)
             if is_stream:
                 return await openai_streaming(openai_req, model, provider, user_agent)
             else:
@@ -190,6 +194,8 @@ async def chat_completions_endpoint(request: Request):
             hdrs = {"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"}
             if user_agent:
                 hdrs["User-Agent"] = user_agent
+            cache_key = resolve_prompt_cache_key(provider.prompt_cache_key, body)
+            inject_prompt_cache_key(body, cache_key)
             if is_stream:
                 return StreamingResponse(
                     stream_openai(url, hdrs, body, provider, user_agent),
