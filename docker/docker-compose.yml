@@ -8,20 +8,15 @@ services:
     ports:
       - "5566:5566"
     environment:
+      # 仅运行参数；数据库/SSO/管理员密码等业务配置全部来自挂载的 .env
       - CC_PORT=5566
       - CC_LOG_DIR=/app/log
       - TZ=Asia/Shanghai
-      - DB_HOST=192.168.0.39
-      - DB_PORT=5432
-      - DB_NAME=cc_proxy
-      - DB_USER=grigs
-      - DB_PASSWORD=Slnwg123$
-      - ADMIN_PASSWORD=Slnwg123$
-      - YZ_LOGIN_ENABLED=true
-      - YZ_LOGIN_URL=http://192.168.0.18:5551
-      - CC_PROXY_CALLBACK_URL=http://192.168.0.19:5566/api/yz/callback
     volumes:
       - ../log:/app/log
+      - ../main.py:/app/main.py
+      - ../.env:/app/.env
+      - ../cc_proxy:/app/cc_proxy
       - ../CHANGELOG.md:/app/CHANGELOG.md:ro
       - /etc/localtime:/etc/localtime:ro
     restart: unless-stopped
