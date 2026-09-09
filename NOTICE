@@ -17,6 +17,16 @@ Claude Code 通用模型网关。
 变更记录
 --------
 
+2026-09-09  修复 SSO 模式下点击「退出」无法真正退出：/api/yz/logout 原仅清本地
+            cookie 后跳回 /，yz-login 上游会话仍在导致自动重新登录；现按集成指南
+            跳转 {yz_url}/logout?from={callback} 完成双端登出；
+            修复统计页趋势柱状图最高柱顶部溢出被裁剪（柱高倍率 140→100，
+            柱列改为 height:100% + justify-content:flex-end 底部对齐）；
+            管理面板 header 新增版本号显示，动态取自 /health，随部署自动更新；
+            新增 CHANGELOG.md 作为版本号唯一来源（proxy.py 启动解析），
+            /api/changelog 端点供面板点击版本号查看更新日志；
+            docker-compose 挂载 CHANGELOG.md、Dockerfile COPY 该文件；
+            版本号升级至 0.5.3。
 2026-07-21  新增 prompt_cache_key 注入（providers.prompt_cache_key 列，
             ''=不注入 / 'session'=按会话派生 / 其他=固定值）；
             新增 quota.py 厂商配额查询及管理端点 /api/providers/{name}/quota；

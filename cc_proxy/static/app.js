@@ -1,6 +1,15 @@
         var API_BASE = '/api';
         var authToken = sessionStorage.getItem('ccProxyToken') || '';
 
+        // 版本号：动态取自后端 /health（两种认证模式均放行），部署后自动更新，无需改前端
+        fetch('/health')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var el = document.getElementById('app-version');
+                if (el && data.version) el.textContent = 'v' + data.version;
+            })
+            .catch(function() {});
+
         // --- 认证 ---
 
         function login() {
@@ -94,6 +103,26 @@
         }
 
         // --- 工具函数 ---
+
+        // --- 更新日志弹窗（点击 header 版本号触发） ---
+        function showChangelog() {
+            var modal = document.getElementById('changelog-modal');
+            if (!modal) return;
+            modal.classList.add('active');
+            var pre = document.getElementById('changelog-content');
+            pre.textContent = '加载中...';
+            api('/changelog')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    document.getElementById('changelog-version').textContent = 'v' + (data.version || '');
+                    pre.textContent = data.changelog || '暂无更新日志';
+                })
+                .catch(function() { pre.textContent = '加载失败'; });
+        }
+
+        function closeChangelog() {
+            document.getElementById('changelog-modal').classList.remove('active');
+        }
 
         function showToast(message, type) {
             type = type || 'success';
@@ -1677,7 +1706,9 @@
                     // 今天按小时显示（最多 24 个），其他按天
                     var isHourly = parseInt(days) <= 1;
                     trend.forEach(function(d) {
-                        var h = Math.max(4, Math.round(d.requests / maxReq * 140));
+                        // 容器高 160px，减去上下 padding(16px)、数值标签(~14px)、日期标签(~12px)和间隙，
+                        // 柱体可用高度约 100px，倍率取 100 防止最高柱顶溢出容器被裁剪
+                        var h = Math.max(4, Math.round(d.requests / maxReq * 100));
                         var rawDate = d.date || '';
                         var label;
                         if (isHourly && rawDate.length >= 16) {
@@ -1691,7 +1722,7 @@
                         }
                         var cacheRate = d.cache_hit_rate || 0;
                         var bg = cacheRate > 30 ? 'var(--success)' : cacheRate > 10 ? 'var(--warning)' : 'var(--primary)';
-                        html += '<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:30px">' +
+                        html += '<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:2px;min-width:30px;height:100%">' +
                             '<div style="font-size:0.7rem;color:var(--text-secondary)">' + d.requests + '</div>' +
                             '<div style="width:100%;max-width:40px;height:' + h + 'px;background:' + bg + ';border-radius:3px 3px 0 0;transition:height 0.3s" title="' + rawDate + ': ' + d.requests + ' 请求, 缓存命中率 ' + cacheRate + '%"></div>' +
                             '<div style="font-size:0.65rem;color:var(--text-secondary);white-space:nowrap">' + label + '</div>' +

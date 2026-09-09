@@ -24,6 +24,7 @@
             <div class="logo">
                 <div class="logo-icon">⚡</div>
                 CC-<span>Proxy</span>
+                <span id="app-version" onclick="showChangelog()" title="点击查看更新日志" style="font-size:0.7rem;color:var(--text-secondary);font-weight:400;align-self:flex-end;margin-bottom:2px;cursor:pointer"></span>
             </div>
             <div class="header-right">
                 <button class="btn btn-secondary btn-sm" onclick="reloadConfig()">
@@ -614,6 +615,18 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeChangePassword()">取消</button>
                 <button class="btn btn-primary" onclick="changePassword()">确认修改</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="changelog-modal" class="modal">
+        <div class="modal-content" style="max-width:640px">
+            <div class="modal-header">
+                <h3>更新日志 <span id="changelog-version" style="font-size:0.8rem;color:var(--text-secondary);font-weight:400"></span></h3>
+                <button class="modal-close" onclick="closeChangelog()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <pre id="changelog-content" style="white-space:pre-wrap;word-break:break-word;font-size:0.85rem;line-height:1.6;margin:0;font-family:inherit;max-height:60vh;overflow-y:auto"></pre>
             </div>
         </div>
     </div>

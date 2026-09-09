@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 
 import httpx
@@ -32,7 +33,26 @@ from cc_proxy.urls import build_openai_url
 
 logger = logging.getLogger("cc-proxy")
 
-VERSION = "0.5.2"
+# 版本号唯一权威来源：项目根目录 CHANGELOG.md 首个 "## [x.y.z]" 标题。
+# Docker 部署需将 CHANGELOG.md 挂载到 /app/CHANGELOG.md（docker-compose.yml 已配置）。
+CHANGELOG_PATH = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+_FALLBACK_VERSION = "0.5.3"
+
+
+def _load_version() -> str:
+    """从 CHANGELOG.md 解析最新版本号；文件缺失或格式异常时回退并告警"""
+    try:
+        text = CHANGELOG_PATH.read_text(encoding="utf-8")
+        m = re.search(r"^##\s+\[?v?(\d+\.\d+\.\d+)\]?", text, re.MULTILINE)
+        if m:
+            return m.group(1)
+        logger.warning(f"{CHANGELOG_PATH} 中未找到版本号标题，使用回退版本 {_FALLBACK_VERSION}")
+    except OSError:
+        logger.warning(f"未找到 {CHANGELOG_PATH}，使用回退版本 {_FALLBACK_VERSION}")
+    return _FALLBACK_VERSION
+
+
+VERSION = _load_version()
 
 # 通用透传端点列表（可通过 .env server.passthrough_paths 扩展）
 _DEFAULT_PASSTHROUGH_PATHS = [
@@ -84,6 +104,16 @@ except ImportError:
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "cc-proxy", "version": VERSION}
+
+
+@app.get("/api/changelog")
+async def changelog():
+    """返回 CHANGELOG.md 内容，供管理面板点击版本号查看"""
+    try:
+        text = CHANGELOG_PATH.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    return {"version": VERSION, "changelog": text}
 
 
 @app.get("/v1/models")

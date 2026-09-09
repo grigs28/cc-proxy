@@ -53,34 +53,36 @@ OpenAI 客户端 → /v1/chat/completions → 找到 provider → 格式匹配�
 
 ### 核心模块
 
-| 模块 | 职责 |
+| 模块（均在 `cc_proxy/` 包内） | 职责 |
 |------|------|
-| `proxy.py` | FastAPI 应用，路由定义（`/v1/messages`、`/v1/chat/completions`、通用透传）、`create_app()` 初始化流程 |
-| `client.py` | HTTP 客户端逻辑：Anthropic 直通（流式/非流式）、OpenAI 转换代理、流式 SSE 生成、重试逻辑（3次） |
-| `converter.py` | Anthropic ↔ OpenAI 格式双向转换：请求、响应、SSE 事件构建 |
-| `providers.py` | `Provider`/`Model` dataclass + `ProviderRegistry` 单例（从 DB 加载，内存缓存） |
-| `db.py` | openGauss 数据库层：连接池（psycopg2）、Provider/Model/User/Settings/Stats 的原生 SQL CRUD |
-| `config.py` | 启动配置管理：YAML 文件加载、环境变量替换 `${VAR:-default}`、密码哈希、线程安全缓存 |
-| `admin.py` | 管理 API（FastAPI Router）：Provider/Model CRUD、用户管理、连通性测试、系统配置 |
-| `auth.py` | 密码认证：Token 管理（内存，30分钟过期）、密码强度验证、认证中间件 |
-| `urls.py` | URL 构建：`build_openai_url` 智能拼接（不重复版本路径）、`dedupe_base_url_path` 去重 |
-| `stats.py` | 请求统计：内存计数 + 异步写入数据库 |
-| `cache.py` | Anthropic Prompt Cache 注入：自动在 tools/system/messages 中插入 `cache_control` 标记（最多 4 个断点）；OpenAI 格式上游的 `prompt_cache_key` 派生与注入 |
-| `usage.py` | Token 使用量采集：从 Anthropic/OpenAI 响应中提取 token（含缓存 token），`SseUsageCollector` 窥探流式 SSE，异步写入数据库 |
-| `quota.py` | 厂商配额查询：按 base_url 分发 Kimi/智谱/MiniMax 配额端点，统一返回 tiers 结构（参考 cc-switch） |
-| `yz_auth/` | 宜众 SSO 登录（可选模块，条件加载） |
+| `cc_proxy/proxy.py` | FastAPI 应用，路由定义（`/v1/messages`、`/v1/chat/completions`、通用透传）、`create_app()` 初始化流程；`VERSION` 常量在此 |
+| `cc_proxy/client.py` | HTTP 客户端逻辑：Anthropic 直通（流式/非流式）、OpenAI 转换代理、流式 SSE 生成、重试逻辑（3次） |
+| `cc_proxy/converter.py` | Anthropic ↔ OpenAI 格式双向转换：请求、响应、SSE 事件构建 |
+| `cc_proxy/providers.py` | `Provider`/`Model` dataclass + `ProviderRegistry` 单例（从 DB 加载，内存缓存） |
+| `cc_proxy/db.py` | openGauss 数据库层：连接池（psycopg2）、Provider/Model/User/Settings/Stats 的原生 SQL CRUD |
+| `cc_proxy/config.py` | 启动配置管理：YAML 文件加载、环境变量替换 `${VAR:-default}`、密码哈希、线程安全缓存 |
+| `cc_proxy/admin.py` | 管理 API（FastAPI Router）：Provider/Model CRUD、用户管理、连通性测试、系统配置 |
+| `cc_proxy/auth.py` | 密码认证：Token 管理（内存，30分钟过期）、密码强度验证、认证中间件 |
+| `cc_proxy/urls.py` | URL 构建：`build_openai_url` 智能拼接（不重复版本路径）、`dedupe_base_url_path` 去重 |
+| `cc_proxy/stats.py` | 请求统计：内存计数 + 异步写入数据库 |
+| `cc_proxy/cache.py` | Anthropic Prompt Cache 注入：自动在 tools/system/messages 中插入 `cache_control` 标记（最多 4 个断点）；OpenAI 格式上游的 `prompt_cache_key` 派生与注入 |
+| `cc_proxy/usage.py` | Token 使用量采集：从 Anthropic/OpenAI 响应中提取 token（含缓存 token），`SseUsageCollector` 窥探流式 SSE，异步写入数据库 |
+| `cc_proxy/quota.py` | 厂商配额查询：按 base_url 分发 Kimi/智谱/MiniMax 配额端点，统一返回 tiers 结构（参考 cc-switch） |
+| `cc_proxy/static/` | Web 管理面板静态文件（单页 `index.html` + favicon） |
+| `cc_proxy/yz_auth/` | 宜众 SSO 登录（可选模块，条件加载） |
+| `main.py` | 入口：解析参数、初始化配置与日志、调用 `create_app()` 后 uvicorn 启动 |
 
 ### 数据流
 
 - **启动配置**（服务器、数据库连接、密码）→ `.env` YAML 文件 → `config.py` 内存缓存
-- **运行时数据**（providers、models、users、model_map、settings）→ openGauss 数据库 → `db.py`
+- **运行时数据**（providers、models、users、model_map、settings）→ openGauss 数据库 → `cc_proxy/db.py`
 - **首次运行**：`create_app()` 检测 `settings.migrated` 标志，从 YAML 自动迁移 provider/model 数据到数据库
 - **数据库连接**：`get_conn()`/`put_conn()` 从 `ThreadedConnectionPool`（2-10 连接）获取/归还
-- **使用量采集**：请求完成后 `usage.py` 提取 token 数据，fire-and-forget 异步写入 `request_logs` 表
+- **使用量采集**：请求完成后 `cc_proxy/usage.py` 提取 token 数据，fire-and-forget 异步写入 `request_logs` 表
 
 ### 重试策略
 
-`client.py` 中对以下状态码自动重试最多 3 次（指数退避）：400、404、429、500、502、503、529。
+`cc_proxy/client.py` 中对以下状态码自动重试最多 3 次（指数退避）：400、404、429、500、502、503、529（`RETRY_STATUSES`）。
 
 ### 透传端点
 
@@ -89,8 +91,8 @@ OpenAI 客户端 → /v1/chat/completions → 找到 provider → 格式匹配�
 ## 认证模式
 
 `create_app()` 根据配置选择认证中间件，**互斥**：
-- **密码认证**（`auth.py`）：默认模式，Token 存内存，30 分钟过期
-- **SSO 认证**（`yz_auth/`）：当 `YZ_LOGIN_ENABLED=true` 时启用，基于宜众 SSO，Cookie 会话 24 小时
+- **密码认证**（`cc_proxy/auth.py`）：默认模式，Token 存内存，30 分钟过期
+- **SSO 认证**（`cc_proxy/yz_auth/`）：当 `YZ_LOGIN_ENABLED=true` 时启用，基于宜众 SSO，Cookie 会话 24 小时
 
 ## 关键约定
 
@@ -105,7 +107,7 @@ OpenAI 客户端 → /v1/chat/completions → 找到 provider → 格式匹配�
 - `strip_fields` 为 true 时过滤掉 `thinking`、`metadata` 等非核心字段，防止上游报错
 - `providers.prompt_cache_key` 控制 OpenAI 格式上游的缓存亲和注入：`''`=不注入（默认）、`'session'`=从请求 `metadata.user_id` 的 `_session_` 后缀派生、其他值=固定 key；仅注入 OpenAI 格式请求，Anthropic 直通不注入
 - 配额查询端点 `GET /api/providers/{name}/quota`，按 provider base_url 自动识别 Kimi/智谱/MiniMax，其余厂商返回 `unsupported`
-- 版本号以 `proxy.py` 中的 `VERSION` 为准（当前 `"0.4.0"`），`__init__.py` 中的 `__version__` 可能滞后
+- 版本号唯一来源是项目根目录 `CHANGELOG.md` 首个 `## [x.y.z]` 标题，`cc_proxy/proxy.py` 启动时解析为 `VERSION`（缺失时回退 `_FALLBACK_VERSION`）；`cc_proxy/__init__.py` 中的 `__version__` 可能滞后；管理面板版本号动态取自 `/health`，点击经 `/api/changelog` 查看更新日志。Docker 部署需挂载 `CHANGELOG.md`（docker-compose.yml 已配置）
 
 ## 配置
 
@@ -114,7 +116,7 @@ OpenAI 客户端 → /v1/chat/completions → 找到 provider → 格式匹配�
 api_key: "${ANTHROPIC_API_KEY:-sk-default}"
 ```
 
-环境变量优先级高于 `.env` 文件（`config.py:get_db_config()` 中环境变量优先）。
+环境变量优先级高于 `.env` 文件（`cc_proxy/config.py:get_db_config()` 中环境变量优先）。
 
 关键环境变量：`CC_PORT`、`CC_HOST`、`CC_CONFIG_PATH`、`CC_LOG_DIR`、`DB_HOST/PORT/NAME/USER/PASSWORD`、`ADMIN_PASSWORD`。
 
@@ -123,3 +125,5 @@ api_key: "${ANTHROPIC_API_KEY:-sk-default}"
 `docs/` 目录下包含历史设计文档：
 - `docs/plans/` — 原始设计和实现方案
 - `docs/superpowers/specs/` — SSO 登录、400 重试等功能规格说明
+
+**注意**：`AGENTS.md` 内容已过时（仍描述双端口 5566/5567 和 `--mode` 参数），以本文件和 `main.py`/`README.md` 为准。

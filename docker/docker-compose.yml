@@ -22,6 +22,7 @@ services:
       - CC_PROXY_CALLBACK_URL=http://192.168.0.19:5566/api/yz/callback
     volumes:
       - ../log:/app/log
+      - ../CHANGELOG.md:/app/CHANGELOG.md:ro
       - /etc/localtime:/etc/localtime:ro
     restart: unless-stopped
     logging:
