@@ -162,6 +162,17 @@ providers:
 
 **strip_fields** — 过滤 Claude Code 发送的非标准字段（如 `thinking`、`metadata`），避免上游报错。Kimi、MiniMax 等不支持 `thinking` 的模型建议开启。
 
+## 认证模式
+
+管理面板支持两种互斥的认证模式：
+
+| 模式 | 说明 | 启用方式 |
+|------|------|---------|
+| **密码认证**（默认） | 管理员密码登录，Token 30 分钟过期 | 无需配置，开箱即用 |
+| **SSO 单点登录**（可选） | 接入 yz-login 统一登录，Cookie 会话 24 小时 | `.env` 设置 `yz_login_enabled: true` 并配置 `yz_login_url`、`cc_proxy_callback_url`，或在管理面板「系统配置」中开启 |
+
+**SSO 默认关闭。** 未启用时使用密码认证（默认密码 `admin`，首次登录强制修改）。启用 SSO 后，访问管理面板会自动跳转 yz-login 登录页，登录成功后携带 ticket 回调建立会话；点击「退出」会同时清除本地会话和 yz-login 上游会话。
+
 ## 格式路由说明
 
 | 入口端点 | 请求格式 | provider 支持 | 行为 |
@@ -179,15 +190,13 @@ providers:
 docker-compose -f docker/docker-compose.yml up -d
 
 # 修改代码后重启（无需重建镜像）
-docker restart docker-cc-proxy-1
+docker restart cc-proxy
 
 # 查看日志
 tail -f log/cc-proxy.log
 ```
 
-Docker Compose 挂载了代码目录，修改 Python 文件后只需 `docker restart` 即可生效。端口映射：
-- **5566** → 主端口（Anthropic + OpenAI）
-- **5567** → 兼容映射（指向同一服务，供旧配置使用）
+Docker Compose 挂载了代码目录（`cc_proxy/`、`main.py`、`.env`、`CHANGELOG.md`），修改 Python 文件后只需 `docker restart` 即可生效。端口映射 **5566** → 主端口（Anthropic + OpenAI）。
 
 ## 运行测试
 
@@ -369,6 +378,17 @@ providers:
 
 **strip_fields** — Strip non-standard fields (e.g. `thinking`, `metadata`) that Claude Code sends, preventing 404 errors from providers that don't support them (e.g. Kimi, MiniMax).
 
+## Authentication
+
+The admin panel supports two mutually exclusive auth modes:
+
+| Mode | Description | How to enable |
+|------|-------------|---------------|
+| **Password** (default) | Admin password login, token expires in 30 min | Works out of the box |
+| **SSO** (optional) | yz-login single sign-on, cookie session 24 h | Set `yz_login_enabled: true` plus `yz_login_url` and `cc_proxy_callback_url` in `.env`, or enable it in the admin panel under Settings |
+
+**SSO is disabled by default.** Without it, password auth is used (default password `admin`, forced change on first login). With SSO enabled, visiting the admin panel redirects to the yz-login login page; after login a ticket callback establishes the session. Clicking "Logout" clears both the local session and the upstream yz-login session.
+
 ## Format Routing
 
 | Endpoint | Request format | Provider supports | Behavior |
@@ -386,15 +406,13 @@ providers:
 docker-compose -f docker/docker-compose.yml up -d
 
 # Apply code changes (no rebuild needed)
-docker restart docker-cc-proxy-1
+docker restart cc-proxy
 
 # View logs
 tail -f log/cc-proxy.log
 ```
 
-Code directories are mounted as Docker volumes — just `docker restart` after editing Python files. Port mapping:
-- **5566** → main port (Anthropic + OpenAI)
-- **5567** → backward-compatible mapping (same service, for legacy configs)
+Code directories (`cc_proxy/`, `main.py`, `.env`, `CHANGELOG.md`) are mounted as Docker volumes — just `docker restart` after editing Python files. Port mapping: **5566** → main port (Anthropic + OpenAI).
 
 ## Running Tests
 
