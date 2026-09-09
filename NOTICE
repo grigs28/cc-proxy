@@ -17,6 +17,9 @@ Claude Code 通用模型网关。
 变更记录
 --------
 
+2026-09-09  修复趋势柱状图缓存命中率 ≤10% 柱子不可见：柱色引用未定义的
+            var(--primary)，改为 var(--accent)（0.5.4）；
+            README 新增认证模式章节（SSO 默认关闭），.env.example 显式关闭 SSO。
 2026-09-09  修复 SSO 模式下点击「退出」无法真正退出：/api/yz/logout 原仅清本地
             cookie 后跳回 /，yz-login 上游会话仍在导致自动重新登录；现按集成指南
             跳转 {yz_url}/logout?from={callback} 完成双端登出；

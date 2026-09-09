@@ -1721,7 +1721,7 @@
                             label = rawDate;
                         }
                         var cacheRate = d.cache_hit_rate || 0;
-                        var bg = cacheRate > 30 ? 'var(--success)' : cacheRate > 10 ? 'var(--warning)' : 'var(--primary)';
+                        var bg = cacheRate > 30 ? 'var(--success)' : cacheRate > 10 ? 'var(--warning)' : 'var(--accent)';
                         html += '<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:2px;min-width:30px;height:100%">' +
                             '<div style="font-size:0.7rem;color:var(--text-secondary)">' + d.requests + '</div>' +
                             '<div style="width:100%;max-width:40px;height:' + h + 'px;background:' + bg + ';border-radius:3px 3px 0 0;transition:height 0.3s" title="' + rawDate + ': ' + d.requests + ' 请求, 缓存命中率 ' + cacheRate + '%"></div>' +

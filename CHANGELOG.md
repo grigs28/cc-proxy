@@ -4,6 +4,15 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.5.4] - 2026-09-09
+
+### 修复
+- 统计页趋势柱状图缓存命中率 ≤10% 的柱子完全不可见：柱色引用了从未定义的 CSS 变量 `var(--primary)`（主题主色为 `--accent`），background 失效退化为透明。已改为 `var(--accent)`
+
+### 文档
+- README 新增「认证模式」章节：密码认证为默认，SSO 可选且默认关闭
+- `.env.example` SSO 开关改为显式 `yz_login_enabled: false`
+
 ## [0.5.3] - 2026-09-09
 
 ### 修复
