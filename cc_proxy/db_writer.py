@@ -430,20 +430,21 @@ def main(argv=None) -> int:
         db_cfg = get_db_config()
         # 批量写入场景放宽语句超时（默认连接池为 2s，批量 INSERT/upsert 可能不足）
         db_cfg["statement_timeout_ms"] = 30000
+        core = WriterCore(
+            spool_dir=spool_dir, sink=DbSink(), batch_size=args.batch_size
+        )
         while True:
             try:
                 db.init_db(db_cfg)
                 break
             except Exception as e:
+                # 启动期 DB 不可用也要更新状态，避免 /health 显示事故前的旧状态
+                write_status(spool_dir, core._load_state(), 0, last_error=str(e))
                 if args.once:
                     logger.error(f"数据库初始化失败: {e}")
                     return 2
                 logger.warning(f"数据库初始化失败，10s 后重试: {e}")
                 time.sleep(10)
-
-        core = WriterCore(
-            spool_dir=spool_dir, sink=DbSink(), batch_size=args.batch_size
-        )
 
         if args.once:
             total = 0

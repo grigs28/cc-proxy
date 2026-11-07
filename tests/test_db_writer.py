@@ -145,6 +145,27 @@ def test_dbsink_missing_pool_is_connection_error(monkeypatch):
         db_writer.DbSink().write(db_writer.Batch())
 
 
+def test_main_once_writes_status_when_db_down(tmp_path, monkeypatch):
+    """启动期 DB 不可用也必须更新 writer 状态，避免 /health 显示旧状态"""
+    from cc_proxy import db, db_writer
+
+    monkeypatch.setattr(db_writer, "_setup_logging", lambda: None)
+    monkeypatch.setattr(db_writer, "acquire_lock", lambda spool_dir: True)
+    monkeypatch.setattr(db_writer, "release_lock", lambda: None)
+    monkeypatch.setattr(
+        db, "init_db", lambda cfg: (_ for _ in ()).throw(RuntimeError("db down"))
+    )
+    monkeypatch.setenv("CC_SPOOL_DIR", str(tmp_path))
+
+    rc = db_writer.main(["--once", "--spool-dir", str(tmp_path)])
+
+    assert rc == 2
+    status = spool.read_json(spool.writer_status_path(tmp_path))
+    assert status is not None
+    assert status["state"] == "retrying"
+    assert "db down" in status["last_error"]
+
+
 def test_lock_is_exclusive(tmp_path):
     from cc_proxy import db_writer
     fd1 = db_writer._try_lock_file(tmp_path / "writer.lock")
