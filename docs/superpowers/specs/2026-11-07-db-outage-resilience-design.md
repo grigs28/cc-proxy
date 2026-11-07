@@ -133,9 +133,12 @@ flush(timeout=2.0)                  # 进程退出时尽力刷盘
 #### C. 管理接口隔离
 
 - `admin.py` 中所有 DB 调用通过 `asyncio.to_thread()` 执行，并用 `asyncio.wait_for(..., timeout=3s)` 兜底；
-- DB 不可用时统一返回 `503 {"detail": "database unavailable"}`，不带堆栈；
+- **写操作的 worker 函数内完成“DB 写入 + 内存刷新”**：即使 HTTP 等待已超时，worker 在 DB 成功后仍会刷新内存，避免 DB 与转发内存长期分叉；
+- `503` 语义明确为“**结果未知**”（可能已执行）：客户端应刷新确认，不自动重试写操作；响应 body 带 `"detail": "database unavailable (result unknown)"`；
 - `/api/config/reload` 在 DB 不可用时返回 503，且**内存路由表保持不变**；
 - 配置写入成功后，同一线程内完成 `refresh_model_map()` + registry reload；失败则保持旧配置。
+
+> SSO 说明：`yz_auth.middleware` 对 `/v1/*` 直接放行，不访问 DB；只有 `/`、`/admin`、`/api/*` 才可能查配置。`admin.py` 的 `_check_admin()` 改为异步并经 `_db_call` 执行；`yz_auth/` 本身不在本次改动范围（且该目录不入 git，避免额外 scp 同步）。
 
 #### D. 超时、探活与重连
 
@@ -162,8 +165,10 @@ flush(timeout=2.0)                  # 进程退出时尽力刷盘
 
 #### 文件命名与轮转
 
-- `telemetry-YYYYMMDD.jsonl`（本地时区，按天轮转）；
-- 单文件超过 100MB 时追加后缀 `-HHMMSS` 轮转；
+- 首文件：`telemetry-YYYYMMDD.jsonl`（本地时区，按天轮转）；
+- 单文件超过 100MB 时**不重命名**：关闭当前文件，新建 `telemetry-YYYYMMDDTHHMMSS.jsonl` 继续写；
+- `T`（ASCII 84）大于 `.`（46），因此同一天内基础文件字典序在后缀文件之前；跨天按日期升序；
+- 文件一旦关闭不再写入，checkpoint 中的 `(file, offset)` 始终指向不变的文件，轮转不会导致漏读/错读；
 - writer 按文件名字典序消费。
 
 #### 事件格式（单行 JSON，紧凑分隔符）
@@ -208,17 +213,25 @@ flush(timeout=2.0)                  # 进程退出时尽力刷盘
 
 #### 失败、重试与死信
 
-- 批失败：rollback，按 1s → 2s → 4s … 最大 60s 指数退避重试，checkpoint 不动；
-- 连续失败 10 次后：对 usage 行降级逐行插入，定位坏行；仍失败的行写入 `spool/deadletter/`，checkpoint 继续推进，避免一个坏行永久阻塞；
-- stat 聚合失败继续整体重试（体量小）；
-- 所有失败计数写入状态文件并记录日志（状态切换时）。
+失败必须先分类，否则 20 分钟宕机会被误判为“坏数据”而丢光遥测：
+
+| 类别 | 判定 | 处理 |
+|------|------|------|
+| **连接级** | `OperationalError` / `InterfaceError` / 连接超时 | rollback → `db.reset_pool()` → 1s→2s→4s…最大 60s **无限退避**；checkpoint 不动、**不写死信**；spool 继续累积 |
+| **数据级** | `DataError` / `IntegrityError` / `ProgrammingError` | 先整体重试；仍失败则对 usage 逐行插入定位坏行，坏行写 `spool/deadletter/`，checkpoint 推进，避免坏行永久阻塞 |
+| stat 聚合失败 | 视为连接级 | 无限重试 |
+
+- 死信仅保留人工处理，**不自动回放**；
+- 所有失败计数写入状态文件并记录日志（状态切换时）；
+- writer 恢复后必须先 `reset_pool()` 再继续，避免复用宕机期间的死连接。
 
 #### 幂等与重复
 
 - 语义：**至少一次**；
 - `request_logs` 建议新增唯一索引 `idx_request_logs_request_id(request_id)`，配合 `ON DUPLICATE KEY UPDATE id = id` 实现 usage 幂等（实现时用测试库验证 openGauss 批量语法）；
 - `request_stats` 在 writer 崩溃重启的极小窗口内可能多计，接受该误差并记录；
-- 若唯一索引迁移不可行，退化为允许少量重复，文档与监控中标注。
+- 若唯一索引迁移不可行，退化为允许少量重复，文档与监控中标注；
+- 现状：`request_stats` 目前**只写不读**（`stats._load_from_db()` 从未被调用，面板统计来自进程内存）。writer 继续维护该表以保持数据连续性，本次**不新增**启动回填，避免改变仪表盘统计口径。
 
 #### 状态与可观测性
 
@@ -234,21 +247,23 @@ writer 每 5s 原子写 `spool/.writer-status.json`：
   "last_batch_rows": 312,
   "deadletter_total": 0,
   "malformed_total": 2,
-  "dropped_total": 0,
   "last_error": ""
 }
 ```
 
-转发进程 `/health` 读取该文件（读失败显示 `writer: unknown`），并补充自身缓存的 `db` 状态：
+**指标归属**：`.writer-status.json` 只包含 writer 侧指标；转发进程 emitter 侧的丢弃/降级由 `/health` 从进程内 `telemetry.get_counters()` 读取，writer 不写、也不会覆盖这些字段。
+
+转发进程 `/health` 读取 status 文件（读失败显示 `writer: unknown`），并补充自身缓存状态：
 
 ```json
 {
   "status": "ok",
   "service": "cc-proxy",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "db": "ok|down",
   "db_last_ok": "2026-11-07T14:21:50+08:00",
   "writer": {"state": "ok", "backlog_bytes": 1048576, "last_success_at": "..."},
+  "telemetry": {"dropped_total": 0, "degraded": false, "queue_size": 0},
   "config": {"providers": 6, "models": 42, "loaded_at": "..."}
 }
 ```
