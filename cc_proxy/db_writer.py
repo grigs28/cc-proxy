@@ -27,7 +27,7 @@ _USAGE_SQL = """
         latency_ms, status_code, is_streaming, created_at)
     VALUES %s
 """
-_USAGE_TEMPLATE = "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)"
+_USAGE_TEMPLATE = "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,COALESCE(%s, CURRENT_TIMESTAMP))"
 
 _STAT_SQL = """
     INSERT INTO request_stats (model_id, provider_name, request_count, last_request)
@@ -61,7 +61,16 @@ def is_connection_error(exc: Exception) -> bool:
 
 
 def _usage_row(event: dict) -> tuple:
-    """usage 事件转元组。emitter 产出长键名，兼容早期短键名格式。"""
+    """usage 事件转元组。emitter 产出长键名，兼容早期短键名格式。
+
+    最后一列使用事件自身的 ts，而不是入库时间；否则故障期间缓冲的事件
+    在恢复后会被打上同一时间戳，扭曲按小时/按天的趋势统计。
+    """
+    ts = event.get("ts")
+    try:
+        created_at = datetime.fromisoformat(ts) if ts else None
+    except (TypeError, ValueError):
+        created_at = None
     return (
         event.get("request_id") or event.get("rid", ""),
         event.get("model", ""),
@@ -73,6 +82,7 @@ def _usage_row(event: dict) -> tuple:
         int(event.get("latency_ms", event.get("lat", 0)) or 0),
         int(event.get("status_code", event.get("st", 200)) or 200),
         bool(event.get("is_streaming", event.get("stream", False))),
+        created_at,
     )
 
 
@@ -336,6 +346,35 @@ def release_lock() -> None:
 # ============================================================
 # 状态文件、保留期清理与进程入口
 # ============================================================
+def _backlog_bytes(files: list[Path], state: dict) -> int:
+    """只统计尚未消费的字节数：当前文件 offset 之后 + 后续所有文件"""
+    current = state.get("file", "")
+    offset = int(state.get("offset") or 0)
+    total = 0
+    counting = not current
+    for p in files:
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        if not current:
+            total += size
+        elif p.name == current:
+            total += max(0, size - offset)
+            counting = True
+        elif counting:
+            total += size
+    if not counting and current:
+        # checkpoint 指向的文件已不存在，保守地把所有文件计入积压
+        total = 0
+        for p in files:
+            try:
+                total += p.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
 def write_status(
     spool_dir: Path | str | None,
     state: dict,
@@ -347,12 +386,7 @@ def write_status(
     spool_dir = Path(spool_dir) if spool_dir is not None else spool.get_spool_dir()
     now = datetime.now().isoformat(timespec="seconds")
     files = spool.list_telemetry_files(spool_dir)
-    backlog = 0
-    for p in files:
-        try:
-            backlog += p.stat().st_size
-        except OSError:
-            pass  # 与 emitter 容量清理并发时文件可能刚被删除
+    backlog = _backlog_bytes(files, state)
     previous = spool.read_json(spool.writer_status_path(spool_dir)) or {}
     data = {
         "updated_at": now,

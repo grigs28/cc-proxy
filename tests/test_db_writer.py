@@ -74,9 +74,14 @@ def test_malformed_lines_are_skipped(tmp_path):
 
 def test_emitter_to_writer_roundtrip(tmp_path):
     """真实 emitter 产出的 spool 必须能被 writer 正确解析（防字段名漂移）"""
+    import datetime
+
     from cc_proxy import telemetry
 
-    core = telemetry.TelemetryCore(spool_dir=tmp_path, stats_interval=0)
+    fixed = datetime.datetime(2026, 11, 7, 12, 0, 0)
+    core = telemetry.TelemetryCore(
+        spool_dir=tmp_path, stats_interval=0, now_fn=lambda: fixed
+    )
     core.enqueue_usage(
         request_id="r1", model="m", provider="p",
         input_tokens=11, output_tokens=22,
@@ -89,7 +94,7 @@ def test_emitter_to_writer_roundtrip(tmp_path):
     sink = FakeSink()
     assert WriterCore(spool_dir=tmp_path, sink=sink).run_once() == 1
     assert sink.batches[0].usage_rows == [
-        ("r1", "m", "p", 11, 22, 3, 4, 55, 201, True)
+        ("r1", "m", "p", 11, 22, 3, 4, 55, 201, True, fixed)
     ]
 
 
@@ -164,6 +169,29 @@ def test_main_once_writes_status_when_db_down(tmp_path, monkeypatch):
     assert status is not None
     assert status["state"] == "retrying"
     assert "db down" in status["last_error"]
+
+
+def test_usage_row_with_bad_ts_falls_back_to_none():
+    from cc_proxy.db_writer import _usage_row
+
+    row = _usage_row({"t": "usage", "rid": "r", "ts": "not-a-time"})
+    assert row[-1] is None
+
+
+def test_write_status_backlog_only_counts_unconsumed(tmp_path):
+    """backlog_bytes 只统计未消费部分，而不是全部 spool 文件大小"""
+    from cc_proxy import db_writer
+
+    f1 = tmp_path / "telemetry-20261107.jsonl"
+    f1.write_bytes(b"x" * 100)
+    f2 = tmp_path / "telemetry-20261107T120000.jsonl"
+    f2.write_bytes(b"y" * 200)
+
+    db_writer.write_status(
+        tmp_path, {"file": f1.name, "offset": 60}, last_batch_rows=0
+    )
+    status = spool.read_json(spool.writer_status_path(tmp_path))
+    assert status["backlog_bytes"] == 240
 
 
 def test_lock_is_exclusive(tmp_path):
