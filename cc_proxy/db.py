@@ -13,22 +13,34 @@ logger = logging.getLogger("cc-proxy")
 # 连接池
 _pool: Optional[pool.ThreadedConnectionPool] = None
 _pool_lock = threading.Lock()
+# 最近一次初始化使用的配置，供 reset_pool() 重建连接池
+_db_config: Optional[dict[str, Any]] = None
+
+
+def _connection_kwargs(db_config: dict[str, Any]) -> dict[str, Any]:
+    """构造连接参数：连接超时 2s，语句超时 2000ms"""
+    return {
+        "host": db_config["host"],
+        "port": db_config.get("port", 5432),
+        "dbname": db_config.get("name", db_config.get("database", "cc_proxy")),
+        "user": db_config["user"],
+        "password": db_config["password"],
+        "connect_timeout": 2,
+        "options": "-c statement_timeout=2000",
+    }
 
 
 def init_db(db_config: dict[str, Any]) -> None:
     """初始化数据库连接池并建表"""
-    global _pool
+    global _pool, _db_config
     with _pool_lock:
         if _pool is not None:
             return
+        _db_config = dict(db_config)
         _pool = pool.ThreadedConnectionPool(
             minconn=2,
             maxconn=10,
-            host=db_config["host"],
-            port=db_config.get("port", 5432),
-            dbname=db_config.get("name", db_config.get("database", "cc_proxy")),
-            user=db_config["user"],
-            password=db_config["password"],
+            **_connection_kwargs(db_config),
         )
     logger.info(f"数据库连接池已创建: {db_config['host']}:{db_config.get('port', 5432)}/{db_config.get('name', 'cc_proxy')}")
     _create_tables()
@@ -176,6 +188,50 @@ def put_conn(conn):
     """归还连接到连接池"""
     if _pool is not None:
         _pool.putconn(conn)
+
+
+def ping(timeout_ms: int = 2000) -> bool:
+    """执行 SELECT 1 探活；任何异常返回 False，不抛出"""
+    conn = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(f"SET statement_timeout = {int(timeout_ms)}")
+        cur.execute("SELECT 1")
+        cur.close()
+        return True
+    except Exception:
+        # 连接可能已损坏，尽力回滚后归还
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        return False
+    finally:
+        if conn is not None:
+            put_conn(conn)
+
+
+def reset_pool() -> bool:
+    """关闭并重建连接池；失败时 _pool 置 None 并返回 False"""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            try:
+                _pool.closeall()
+            except Exception:
+                pass
+            _pool = None
+    if _db_config is None:
+        return False
+    try:
+        init_db(_db_config)
+        return True
+    except Exception as e:
+        logger.warning(f"数据库连接池重建失败: {e}")
+        _pool = None
+        return False
 
 
 # ============================================================
