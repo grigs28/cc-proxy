@@ -44,3 +44,24 @@ def test_get_model(fake_db):
     data = resp.json()
     assert data["id"] == "gpt-4o"
     assert data["object"] == "model"
+
+
+def test_create_app_works_without_add_event_handler(fake_db, monkeypatch):
+    """模拟新版 FastAPI（add_event_handler 已移除）时 create_app 仍可用。
+
+    生产 Docker 镜像的 FastAPI 比开发机新，已删除 add_event_handler；
+    生命周期必须改用 lifespan，保证两个版本都能启动。
+    """
+    from fastapi import FastAPI
+    from cc_proxy.proxy import create_app
+
+    # add_event_handler 在开发机上是继承方法，delattr 无法删除；
+    # 改为让它像新版 FastAPI 一样抛 AttributeError
+    def _removed(self, *args, **kwargs):
+        raise AttributeError("'FastAPI' object has no attribute 'add_event_handler'")
+
+    monkeypatch.setattr(FastAPI, "add_event_handler", _removed)
+    app = create_app(".env.example")
+    assert app is not None
+    resp = TestClient(app).get("/health")
+    assert resp.status_code == 200

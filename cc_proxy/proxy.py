@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
@@ -91,6 +92,17 @@ def _find_model(model_id: str):
 # FastAPI 应用
 # ============================================================
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """应用生命周期：关闭时停止遥测与探活线程。
+
+    新版 FastAPI 已移除 add_event_handler，lifespan 是跨版本兼容写法。
+    """
+    yield
+    telemetry.stop()
+    stop_prober()
+
+
 main_router = APIRouter()
 
 
@@ -100,7 +112,7 @@ def _build_app() -> FastAPI:
     create_app() 每次调用都会得到独立实例，避免重复调用时向已启动的 app
     追加中间件而报错。模块级 app 仅为兼容 cc_proxy.app 旧引用。
     """
-    instance = FastAPI(title="cc-proxy", version=VERSION)
+    instance = FastAPI(title="cc-proxy", version=VERSION, lifespan=_lifespan)
     instance.mount(
         "/static",
         StaticFiles(directory=Path(os.path.dirname(__file__)) / "static"),
@@ -387,7 +399,6 @@ def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
     # 6. 启动遥测：后台线程写本地 spool，由独立 db-writer 进程批量入库
     telemetry.configure(spool_dir=os.environ.get("CC_SPOOL_DIR", "spool"))
     telemetry.start()
-    app.add_event_handler("shutdown", telemetry.stop)
 
     # 7. 启动数据库探活线程；恢复后重建连接池并刷新配置
     from cc_proxy.db import reset_pool
@@ -395,7 +406,7 @@ def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
     start_prober(
         on_recover=lambda: (reset_pool(), get_registry().reload()),
     )
-    app.add_event_handler("shutdown", stop_prober)
+    # telemetry.stop / stop_prober 由 _lifespan 在应用关闭时统一调用
 
     # 同步状态到 admin 模块
     admin_module.proxy_port = port if port is not None else 5566
