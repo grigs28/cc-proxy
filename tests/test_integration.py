@@ -17,7 +17,7 @@ def _get_app():
     return create_app(".env.example")
 
 
-def test_health_endpoint():
+def test_health_endpoint(fake_db):
     app = _get_app()
     client = TestClient(app)
     resp = client.get("/")
@@ -26,7 +26,7 @@ def test_health_endpoint():
     assert "html" in resp.headers.get("content-type", "")
 
 
-def test_list_models():
+def test_list_models(fake_db):
     app = _get_app()
     client = TestClient(app)
     resp = client.get("/v1/models")
@@ -36,7 +36,7 @@ def test_list_models():
     assert len(data["data"]) > 0
 
 
-def test_get_model():
+def test_get_model(fake_db):
     app = _get_app()
     client = TestClient(app)
     resp = client.get("/v1/models/gpt-4o")

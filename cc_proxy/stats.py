@@ -4,6 +4,8 @@ import time
 from collections import defaultdict
 from typing import Any
 
+from cc_proxy import telemetry
+
 _stats: dict[str, Any] = {
     "total_requests": 0,
     "by_model": defaultdict(int),
@@ -44,12 +46,8 @@ async def increment(model: str, provider_name: str,
         _stats["total_cache_read_tokens"] += cache_read_tokens
         _stats["total_cache_creation_tokens"] += cache_creation_tokens
 
-    # 异步写数据库，不阻塞请求
-    try:
-        from cc_proxy.db import db_increment_stat
-        db_increment_stat(model, provider_name)
-    except Exception:
-        pass
+    # 遥测交由后台线程写本地 spool，不访问数据库、不阻塞请求
+    telemetry.emit_stat(model, provider_name)
 
 
 def get() -> dict[str, Any]:

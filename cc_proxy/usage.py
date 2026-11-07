@@ -10,6 +10,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from cc_proxy import telemetry
+
 logger = logging.getLogger("cc-proxy")
 
 
@@ -154,19 +156,18 @@ def log_usage_async(usage: TokenUsage, model: str, provider_name: str,
     request_id = uuid.uuid4().hex[:12]
 
     try:
-        from cc_proxy.db import db_insert_request_log
-        db_insert_request_log({
-            "request_id": request_id,
-            "model_id": model,
-            "provider_name": provider_name,
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_read_tokens": usage.cache_read_tokens,
-            "cache_creation_tokens": usage.cache_creation_tokens,
-            "latency_ms": latency_ms,
-            "status_code": status_code,
-            "is_streaming": is_streaming,
-        })
+        telemetry.emit_usage(
+            request_id=request_id,
+            model=model,
+            provider=provider_name,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_creation_tokens=usage.cache_creation_tokens,
+            latency_ms=latency_ms,
+            status_code=status_code,
+            is_streaming=is_streaming,
+        )
         logger.info(f"  usage: model={model} in={usage.input_tokens} out={usage.output_tokens} "
                     f"cache_read={usage.cache_read_tokens} cache_create={usage.cache_creation_tokens} "
                     f"latency={latency_ms}ms")
