@@ -39,7 +39,7 @@ logger = logging.getLogger("cc-proxy")
 # 版本号唯一权威来源：项目根目录 CHANGELOG.md 首个 "## [x.y.z]" 标题。
 # Docker 部署需将 CHANGELOG.md 挂载到 /app/CHANGELOG.md（docker-compose.yml 已配置）。
 CHANGELOG_PATH = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
-_FALLBACK_VERSION = "0.5.5"
+_FALLBACK_VERSION = "0.5.6"
 
 
 def _load_version() -> str:

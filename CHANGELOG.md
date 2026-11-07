@@ -4,6 +4,15 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.5.6] - 2026-11-07
+
+### 修复
+- 新版 FastAPI 移除 `add_event_handler`，生产启动即崩溃；应用生命周期改用 `lifespan`（新旧版本兼容）
+- writer 连接池重建失败后 `get_conn()` 抛 `RuntimeError`，被误判为数据级错误，10 次退避后会把遥测写入死信；现统一按连接级错误无限退避、不推进 checkpoint
+- writer 启动期 DB 不可用时状态文件不更新，`/health` 显示事故前的旧状态；现在初始化重试期间也写状态
+- `request_logs.created_at` 改用 spool 事件的 `ts`，避免 DB 恢复后故障期缓冲事件被统一打上恢复时间、扭曲趋势统计
+- `writer-status.backlog_bytes` 改为只统计未消费字节（当前 offset 之后 + 后续文件），可正确归零
+
 ## [0.5.5] - 2026-11-07
 
 ### 修复 / 可用性
