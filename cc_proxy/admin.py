@@ -19,7 +19,7 @@ from cc_proxy.client import (
     ANTHROPIC_VERSION,
     anthropic_headers,
 )
-from cc_proxy.config import get_config, get_server_config
+from cc_proxy.config import get_config, get_model_map, get_server_config
 from cc_proxy.db import (
     db_add_model,
     db_delete_model,
@@ -46,8 +46,36 @@ config_path: str = ".env"
 yz_sso_enabled: bool = False
 
 
-def _check_admin(request: Request):
-    """SSO 模式下检查管理员权限"""
+async def _db_call(
+    fn,
+    *args,
+    timeout: float = 3.0,
+    passthrough: tuple[type[BaseException], ...] = (),
+    **kwargs,
+):
+    """在线程池执行 DB 调用，避免阻塞事件循环。
+
+    超时或异常统一返回 503（结果未知）。`passthrough` 中的异常类型原样抛出，
+    用于把 ValueError 之类的用户输入错误映射回 400。
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(fn, *args, **kwargs), timeout
+        )
+    except HTTPException:
+        raise
+    except asyncio.TimeoutError:
+        logger.warning(f"数据库操作超时（{timeout}s）: {getattr(fn, '__name__', fn)}")
+        raise HTTPException(status_code=503, detail="database unavailable (result unknown)")
+    except Exception as e:
+        if passthrough and isinstance(e, passthrough):
+            raise
+        logger.warning(f"数据库操作失败: {e}")
+        raise HTTPException(status_code=503, detail="database unavailable (result unknown)")
+
+
+async def _check_admin(request: Request):
+    """SSO 模式下检查管理员权限（DB 调用走线程池）"""
     if not yz_sso_enabled:
         return None
     try:
@@ -56,17 +84,16 @@ def _check_admin(request: Request):
         if not session:
             raise HTTPException(status_code=401, detail="未登录")
         username = session.get("username", "")
-        if not db_is_admin(username):
+        if not await _db_call(db_is_admin, username):
             raise HTTPException(status_code=403, detail="需要管理员权限")
         return session
     except ImportError:
         return None
 
 
-def _is_admin_user(session: dict) -> bool:
-    """判断 SSO 用户是否为管理员"""
-    username = session.get("username", "")
-    return db_is_admin(username)
+async def _is_admin_user(session: dict) -> bool:
+    """判断 SSO 用户是否为管理员（DB 调用走线程池）"""
+    return bool(await _db_call(db_is_admin, session.get("username", "")))
 
 
 def _mask_for_viewer(data: dict) -> dict:
@@ -110,7 +137,7 @@ async def admin_auth(request: Request):
             from cc_proxy.yz_auth.session import get_session
             session = get_session(request)
             if session:
-                return {"token": "sso", "user": session, "is_admin": _is_admin_user(session), "requires_password_change": False}
+                return {"token": "sso", "user": session, "is_admin": await _is_admin_user(session), "requires_password_change": False}
         except ImportError:
             pass
         raise HTTPException(status_code=401, detail="SSO 模式下请通过 yz-login 登录")
@@ -168,7 +195,7 @@ async def admin_list_providers(request: Request):
         try:
             from cc_proxy.yz_auth.session import get_session
             session = get_session(request)
-            if session and not _is_admin_user(session):
+            if session and not await _is_admin_user(session):
                 providers = [_mask_for_viewer(p) for p in providers]
         except ImportError:
             pass
@@ -185,7 +212,7 @@ async def admin_get_provider(name: str, request: Request):
         try:
             from cc_proxy.yz_auth.session import get_session
             session = get_session(request)
-            if session and not _is_admin_user(session):
+            if session and not await _is_admin_user(session):
                 result = _mask_for_viewer(result)
         except ImportError:
             pass
@@ -194,23 +221,26 @@ async def admin_get_provider(name: str, request: Request):
 
 @router.post("/api/providers")
 async def admin_add_provider(request: Request):
-    _check_admin(request)
+    await _check_admin(request)
     data = await request.json()
     try:
-        return mask_api_key(get_registry().add_provider(data).to_dict())
+        provider = await _db_call(
+            get_registry().add_provider, data, passthrough=(ValueError,)
+        )
+        return mask_api_key(provider.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.put("/api/providers/{name}")
 async def admin_update_provider(name: str, request: Request):
-    _check_admin(request)
+    await _check_admin(request)
     data = await request.json()
     r = get_registry()
     ex = r.get_provider(name)
     if ex and "****" in data.get("api_key", ""):
         data["api_key"] = ex.api_key
-    p = r.update_provider(name, data)
+    p = await _db_call(r.update_provider, name, data)
     if not p:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
     return mask_api_key(p.to_dict())
@@ -218,8 +248,8 @@ async def admin_update_provider(name: str, request: Request):
 
 @router.delete("/api/providers/{name}")
 async def admin_delete_provider(name: str, request: Request):
-    _check_admin(request)
-    if not get_registry().remove_provider(name):
+    await _check_admin(request)
+    if not await _db_call(get_registry().remove_provider, name):
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
     return {"success": True}
 
@@ -227,7 +257,7 @@ async def admin_delete_provider(name: str, request: Request):
 @router.get("/api/providers/{name}/quota")
 async def admin_provider_quota(name: str, request: Request):
     """查询 provider 在厂商侧的配额/余量（Kimi/智谱/MiniMax）"""
-    _check_admin(request)
+    await _check_admin(request)
     p = get_registry().get_provider(name)
     if not p:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
@@ -246,7 +276,7 @@ async def admin_list_models():
 
 @router.post("/api/providers/{name}/models")
 async def admin_add_model(name: str, request: Request):
-    _check_admin(request)
+    await _check_admin(request)
     data = await request.json()
     if not data.get("id"):
         raise HTTPException(status_code=400, detail="Model 'id' is required")
@@ -254,11 +284,15 @@ async def admin_add_model(name: str, request: Request):
     p = r.get_provider(name)
     if not p:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
-    try:
+    def _add_model_and_reload():
         db_add_model(name, data)
-    except Exception as e:
+        if not get_registry().reload():
+            raise RuntimeError("配置刷新失败")
+
+    try:
+        await _db_call(_add_model_and_reload, passthrough=(ValueError,))
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    r.reload()
     return {"id": data["id"], "display_name": data.get("display_name", data["id"]),
             "alias": data.get("alias", ""),
             "supported_formats": data.get("supported_formats", ["openai", "anthropic"]),
@@ -311,30 +345,41 @@ async def admin_get_provider_upstream_models(name: str):
 
 @router.delete("/api/providers/{name}/models/{model_id}")
 async def admin_delete_model(name: str, model_id: str, request: Request):
-    _check_admin(request)
+    await _check_admin(request)
     r = get_registry()
     p = r.get_provider(name)
     if not p:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
-    if not db_delete_model(name, model_id):
+    def _delete_model_and_reload():
+        deleted = db_delete_model(name, model_id)
+        if deleted and not get_registry().reload():
+            raise RuntimeError("配置刷新失败")
+        return deleted
+
+    if not await _db_call(_delete_model_and_reload):
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
-    r.reload()
     return {"success": True}
 
 
 @router.put("/api/providers/{name}/models/{model_id}")
 async def admin_update_model(name: str, model_id: str, request: Request):
-    _check_admin(request)
+    await _check_admin(request)
     r = get_registry()
     p = r.get_provider(name)
     if not p:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
 
     data = await request.json()
-    result = db_update_model(name, model_id, data)
+
+    def _update_model_and_reload():
+        updated = db_update_model(name, model_id, data)
+        if updated and not get_registry().reload():
+            raise RuntimeError("配置刷新失败")
+        return updated
+
+    result = await _db_call(_update_model_and_reload)
     if not result:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
-    r.reload()
     return result
 
 
@@ -344,16 +389,16 @@ async def admin_update_model(name: str, model_id: str, request: Request):
 
 @router.get("/api/users")
 async def admin_list_users(request: Request):
-    _check_admin(request)
-    return {"users": db_list_users()}
+    await _check_admin(request)
+    return {"users": await _db_call(db_list_users)}
 
 
 @router.put("/api/users/{username}/admin")
 async def admin_set_user_admin(username: str, request: Request):
-    _check_admin(request)
+    await _check_admin(request)
     data = await request.json()
     is_admin = data.get("is_admin", False)
-    if not db_set_admin(username, is_admin):
+    if not await _db_call(db_set_admin, username, is_admin):
         raise HTTPException(status_code=404, detail=f"用户 '{username}' 不存在")
     return {"success": True, "username": username, "is_admin": is_admin}
 
@@ -364,8 +409,10 @@ async def admin_set_user_admin(username: str, request: Request):
 
 @router.post("/api/config/reload")
 async def admin_reload(request: Request):
-    _check_admin(request)
-    get_registry().reload()
+    await _check_admin(request)
+    ok = await _db_call(get_registry().reload)
+    if not ok:
+        raise HTTPException(status_code=503, detail="database unavailable (result unknown)")
     return {"success": True, "message": "配置已重新加载"}
 
 
@@ -375,10 +422,9 @@ async def admin_reload(request: Request):
 
 @router.get("/api/settings")
 async def admin_get_settings(request: Request):
-    _check_admin(request)
+    await _check_admin(request)
     cfg = get_config()
-    settings = db_get_all_settings()
-    from cc_proxy.db import db_get_model_map
+    settings = await _db_call(db_get_all_settings)
     import os as _os
     return {
         "server": {
@@ -391,50 +437,54 @@ async def admin_get_settings(request: Request):
         "yz_login_enabled": (lambda v: v if isinstance(v, bool) else str(v).lower() in ("true", "1"))(settings.get("yz_login_enabled", _os.environ.get("YZ_LOGIN_ENABLED", ""))) or cfg.get("yz_login_enabled", False),
         "yz_login_url": settings.get("yz_login_url") or _os.environ.get("YZ_LOGIN_URL") or cfg.get("yz_login_url", ""),
         "cc_proxy_callback_url": settings.get("cc_proxy_callback_url") or _os.environ.get("CC_PROXY_CALLBACK_URL") or cfg.get("cc_proxy_callback_url", ""),
-        "model_map": db_get_model_map(),
+        "model_map": get_model_map(),
         "sso_admin_users": settings.get("sso_admin_users", []),
-        "users": db_list_users(),
+        "users": await _db_call(db_list_users),
         "auto_refresh_interval": settings.get("auto_refresh_interval", 15),
     }
 
 
 @router.put("/api/settings")
 async def admin_save_settings(request: Request):
-    _check_admin(request)
+    await _check_admin(request)
     data = await request.json()
 
-    # 保存到 DB settings 表
-    if "server" in data:
-        srv = data["server"]
-        if "passthrough_paths" in srv:
-            db_set_setting("passthrough_paths", srv["passthrough_paths"])
-    if "sso_public_paths" in data:
-        db_set_setting("sso_public_paths", data["sso_public_paths"])
-    if "model_map" in data:
-        db_set_model_map_all(data["model_map"])
-    if "sso_admin_users" in data:
-        db_set_setting("sso_admin_users", data["sso_admin_users"])
+    def _save_settings_and_reload():
+        # 保存到 DB settings 表
+        if "server" in data:
+            srv = data["server"]
+            if "passthrough_paths" in srv:
+                db_set_setting("passthrough_paths", srv["passthrough_paths"])
+        if "sso_public_paths" in data:
+            db_set_setting("sso_public_paths", data["sso_public_paths"])
+        if "model_map" in data:
+            db_set_model_map_all(data["model_map"])
+        if "sso_admin_users" in data:
+            db_set_setting("sso_admin_users", data["sso_admin_users"])
 
-    # SSO 配置（保存到 settings 表，覆盖环境变量）
-    for key, db_key in [
-        ("yz_login_enabled", "yz_login_enabled"),
-        ("yz_login_url", "yz_login_url"),
-        ("cc_proxy_callback_url", "cc_proxy_callback_url"),
-    ]:
-        if key in data:
-            db_set_setting(db_key, data[key])
+        # SSO 配置（保存到 settings 表，覆盖环境变量）
+        for key, db_key in [
+            ("yz_login_enabled", "yz_login_enabled"),
+            ("yz_login_url", "yz_login_url"),
+            ("cc_proxy_callback_url", "cc_proxy_callback_url"),
+        ]:
+            if key in data:
+                db_set_setting(db_key, data[key])
 
-    if "auto_refresh_interval" in data:
-        db_set_setting("auto_refresh_interval", data["auto_refresh_interval"])
+        if "auto_refresh_interval" in data:
+            db_set_setting("auto_refresh_interval", data["auto_refresh_interval"])
 
-    get_registry().reload()
+        if not get_registry().reload():
+            raise RuntimeError("配置刷新失败")
+
+    await _db_call(_save_settings_and_reload)
     return {"success": True, "message": "配置已保存"}
 
 
 @router.get("/api/settings/paths")
 async def admin_get_passthrough_paths(request: Request):
     from cc_proxy.proxy import _DEFAULT_PASSTHROUGH_PATHS
-    settings = db_get_all_settings()
+    settings = await _db_call(db_get_all_settings)
     extra = settings.get("passthrough_paths", [])
     return {
         "default_paths": _DEFAULT_PASSTHROUGH_PATHS,
@@ -542,7 +592,7 @@ async def _fetch_models_from_endpoint(base_url: str, api_key: str, fmt: str) -> 
 
 @router.post("/api/providers/detect-auth")
 async def admin_detect_auth(request: Request):
-    _check_admin(request)
+    await _check_admin(request)
     data = await request.json()
     provider_name = data.get("provider_name", "")
     test_model = data.get("test_model", "test")
@@ -585,7 +635,7 @@ async def admin_detect_auth(request: Request):
 
 @router.post("/api/models/test")
 async def admin_test_model(request: Request):
-    _check_admin(request)
+    await _check_admin(request)
     data = await request.json()
     provider_name = data.get("provider_name", "")
     model_id = data.get("model_id", "")
@@ -620,7 +670,7 @@ async def admin_test_model(request: Request):
 
 @router.post("/api/providers/{name}/test")
 async def admin_test_provider(name: str, request: Request):
-    _check_admin(request)
+    await _check_admin(request)
     p = get_registry().get_provider(name)
     if not p:
         raise HTTPException(status_code=404, detail=f"Provider '{name}' not found")
@@ -658,8 +708,8 @@ async def usage_summary(request: Request):
 
     days_str = request.query_params.get("days", "30")
     days = int(days_str) if days_str.isdigit() else 30
-    db_summary = db_get_usage_summary(days)
-    pricing = db_get_model_pricing()
+    db_summary = await _db_call(db_get_usage_summary, days)
+    pricing = await _db_call(db_get_model_pricing)
 
     # 计算估算成本
     price_map = {p["model_id"]: p for p in pricing}
@@ -689,7 +739,7 @@ async def usage_trend(request: Request):
     from cc_proxy.db import db_get_usage_trend
     days_str = request.query_params.get("days", "7")
     days = int(days_str) if days_str.isdigit() else 7
-    return {"days": days, "trend": db_get_usage_trend(days)}
+    return {"days": days, "trend": await _db_call(db_get_usage_trend, days)}
 
 
 @router.get("/api/usage/logs")
@@ -700,7 +750,9 @@ async def usage_logs(request: Request):
     size = int(request.query_params.get("size", "20"))
     model = request.query_params.get("model", "")
     provider = request.query_params.get("provider", "")
-    return db_get_usage_logs(page=page, size=size, model=model, provider=provider)
+    return await _db_call(
+        db_get_usage_logs, page=page, size=size, model=model, provider=provider
+    )
 
 
 @router.get("/api/usage/models")
@@ -709,8 +761,8 @@ async def usage_model_stats(request: Request):
     from cc_proxy.db import db_get_model_stats, db_get_model_pricing
     days_str = request.query_params.get("days", "30")
     days = int(days_str) if days_str.isdigit() else 30
-    stats = db_get_model_stats(days)
-    pricing = db_get_model_pricing()
+    stats = await _db_call(db_get_model_stats, days)
+    pricing = await _db_call(db_get_model_pricing)
     price_map = {p["model_id"]: p for p in pricing}
 
     for s in stats:
@@ -732,7 +784,7 @@ async def usage_provider_stats(request: Request):
     from cc_proxy.db import db_get_provider_stats
     days_str = request.query_params.get("days", "30")
     days = int(days_str) if days_str.isdigit() else 30
-    stats = db_get_provider_stats(days)
+    stats = await _db_call(db_get_provider_stats, days)
     return {"days": days, "providers": stats}
 
 
@@ -740,39 +792,44 @@ async def usage_provider_stats(request: Request):
 async def usage_pricing_list():
     """获取所有模型定价"""
     from cc_proxy.db import db_get_model_pricing
-    return {"pricing": db_get_model_pricing()}
+    return {"pricing": await _db_call(db_get_model_pricing)}
 
 
 @router.put("/api/usage/pricing")
 async def usage_pricing_batch_update(request: Request):
     """批量更新模型定价"""
-    _check_admin(request)
+    await _check_admin(request)
     from cc_proxy.db import db_set_model_pricing
     data = await request.json()
     items = data if isinstance(data, list) else [data]
-    results = []
-    for item in items:
-        model_id = item.get("model_id")
-        if not model_id:
-            continue
-        results.append(db_set_model_pricing(model_id, item))
+
+    def _set_pricing_batch():
+        results = []
+        for item in items:
+            model_id = item.get("model_id")
+            if not model_id:
+                continue
+            results.append(db_set_model_pricing(model_id, item))
+        return results
+
+    results = await _db_call(_set_pricing_batch)
     return {"success": True, "pricing": results}
 
 
 @router.put("/api/usage/pricing/{model_id}")
 async def usage_pricing_update(model_id: str, request: Request):
     """更新单个模型定价"""
-    _check_admin(request)
+    await _check_admin(request)
     from cc_proxy.db import db_set_model_pricing
     data = await request.json()
-    return db_set_model_pricing(model_id, data)
+    return await _db_call(db_set_model_pricing, model_id, data)
 
 
 @router.delete("/api/usage/pricing/{model_id}")
 async def usage_pricing_delete(model_id: str, request: Request):
     """删除模型定价"""
-    _check_admin(request)
+    await _check_admin(request)
     from cc_proxy.db import db_delete_model_pricing
-    if not db_delete_model_pricing(model_id):
+    if not await _db_call(db_delete_model_pricing, model_id):
         raise HTTPException(status_code=404, detail=f"定价 '{model_id}' 不存在")
     return {"success": True}
