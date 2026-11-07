@@ -255,8 +255,25 @@ class WriterCore:
 class DbSink:
     """真实数据库写入：一个批次一个事务"""
 
+    @staticmethod
+    def _get_conn():
+        """获取连接；池未初始化（reset_pool 失败后）时归类为连接级错误。
+
+        get_conn() 在池为 None 时抛 RuntimeError，若直接冒泡会被误判为数据级
+        错误并最终写死信。这里先尝试重建池，失败则抛 OperationalError，
+        让 process() 走无限退避、不推进 checkpoint。
+        """
+        for attempt in range(2):
+            try:
+                return db.get_conn()
+            except RuntimeError:
+                if attempt == 0 and db.reset_pool():
+                    continue
+                break
+        raise psycopg2.OperationalError("connection pool unavailable")
+
     def write(self, batch: Batch) -> None:
-        conn = db.get_conn()
+        conn = self._get_conn()
         try:
             cur = conn.cursor()
             if batch.usage_rows:

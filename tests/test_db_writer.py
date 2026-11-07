@@ -2,6 +2,7 @@
 import os
 
 import psycopg2
+import pytest
 
 from cc_proxy import spool
 from cc_proxy.db_writer import WriterCore
@@ -129,6 +130,19 @@ def test_collect_leaves_partial_last_line_for_next_round(tmp_path):
     with f.open("a", encoding="utf-8") as fh:
         fh.write(',"provider":"p","n":2}\n')
     assert core.run_once() == 1
+
+
+def test_dbsink_missing_pool_is_connection_error(monkeypatch):
+    """池为 None（reset_pool 失败后）必须归类为连接级，不能写死信"""
+    from cc_proxy import db, db_writer
+
+    monkeypatch.setattr(
+        db, "get_conn", lambda: (_ for _ in ()).throw(RuntimeError("数据库未初始化"))
+    )
+    monkeypatch.setattr(db, "reset_pool", lambda: False)
+
+    with pytest.raises(psycopg2.OperationalError):
+        db_writer.DbSink().write(db_writer.Batch())
 
 
 def test_lock_is_exclusive(tmp_path):
