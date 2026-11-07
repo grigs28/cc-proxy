@@ -71,6 +71,47 @@ def test_malformed_lines_are_skipped(tmp_path):
     assert sink.batches[0].malformed == 1
 
 
+def test_emitter_to_writer_roundtrip(tmp_path):
+    """真实 emitter 产出的 spool 必须能被 writer 正确解析（防字段名漂移）"""
+    from cc_proxy import telemetry
+
+    core = telemetry.TelemetryCore(spool_dir=tmp_path, stats_interval=0)
+    core.enqueue_usage(
+        request_id="r1", model="m", provider="p",
+        input_tokens=11, output_tokens=22,
+        cache_read_tokens=3, cache_creation_tokens=4,
+        latency_ms=55, status_code=201, is_streaming=True,
+    )
+    core.drain(force_stats=True)
+    core.flush()
+
+    sink = FakeSink()
+    assert WriterCore(spool_dir=tmp_path, sink=sink).run_once() == 1
+    assert sink.batches[0].usage_rows == [
+        ("r1", "m", "p", 11, 22, 3, 4, 55, 201, True)
+    ]
+
+
+def test_process_reports_retry(tmp_path):
+    _spool(tmp_path, [{"t": "stat", "model": "m", "provider": "p", "n": 1, "ts": "t"}])
+    sink = FakeSink([psycopg2.OperationalError("down")])
+    core = WriterCore(spool_dir=tmp_path, sink=sink)
+    retries = []
+    processed = core.process(
+        connection_retry_limit=2,
+        sleep_fn=lambda s: None,
+        on_retry=lambda e, d: retries.append(type(e)),
+    )
+    assert processed == 1
+    assert retries == [psycopg2.OperationalError]
+
+
+def test_query_canceled_is_not_connection_error():
+    from cc_proxy.db_writer import is_connection_error
+
+    assert is_connection_error(psycopg2.errors.QueryCanceled("timeout")) is False
+
+
 def test_lock_is_exclusive(tmp_path):
     from cc_proxy import db_writer
     fd1 = db_writer._try_lock_file(tmp_path / "writer.lock")

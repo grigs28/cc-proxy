@@ -1,5 +1,6 @@
 """spool 与遥测 emitter 的测试"""
 import json
+from datetime import datetime
 from pathlib import Path
 
 from cc_proxy import spool, telemetry
@@ -49,6 +50,48 @@ def test_queue_overflow_drops_without_raising(tmp_path):
                               cache_read_tokens=0, cache_creation_tokens=0,
                               latency_ms=1, status_code=200, is_streaming=False) is False
     assert core.counters()["dropped_total"] == 1
+
+
+def test_spool_capacity_deletes_consumed_files(tmp_path):
+    old = tmp_path / "telemetry-20261106.jsonl"
+    old.write_text("x" * 100, encoding="utf-8")
+    current = tmp_path / "telemetry-20261107.jsonl"
+    current.write_text("y" * 100, encoding="utf-8")
+    (tmp_path / ".writer-state.json").write_text(
+        json.dumps({"file": "telemetry-20261107.jsonl", "offset": 0}),
+        encoding="utf-8",
+    )
+    core = telemetry.TelemetryCore(
+        spool_dir=tmp_path,
+        stats_interval=0,
+        max_total_bytes=150,
+        now_fn=lambda: datetime(2026, 11, 7, 12, 0, 0),
+    )
+    core.add_stat("m", "p")
+    core.drain(force_stats=True)
+    assert not old.exists()
+    assert core.counters()["dropped_total"] == 0
+
+
+def test_spool_capacity_drops_when_no_consumed_files(tmp_path):
+    current = tmp_path / "telemetry-20261107.jsonl"
+    current.write_text("y" * 200, encoding="utf-8")
+    (tmp_path / ".writer-state.json").write_text(
+        json.dumps({"file": "telemetry-20261107.jsonl", "offset": 0}),
+        encoding="utf-8",
+    )
+    core = telemetry.TelemetryCore(
+        spool_dir=tmp_path,
+        stats_interval=0,
+        max_total_bytes=50,
+        now_fn=lambda: datetime(2026, 11, 7, 12, 0, 0),
+    )
+    core.add_stat("m", "p")
+    core.drain(force_stats=True)
+    core.flush()
+    assert core.counters()["dropped_total"] >= 1
+    # writer 尚未消费的当前文件不能被删
+    assert current.exists()
 
 
 def test_disk_error_degrades_without_raising(tmp_path, monkeypatch):

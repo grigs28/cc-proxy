@@ -18,7 +18,12 @@ _db_config: Optional[dict[str, Any]] = None
 
 
 def _connection_kwargs(db_config: dict[str, Any]) -> dict[str, Any]:
-    """构造连接参数：连接超时 2s，语句超时 2000ms"""
+    """构造连接参数：连接超时 2s、语句超时（默认 2000ms）、TCP keepalive 快速发现死连接。
+
+    keepalive 使网络黑洞场景下 libpq 在 ~10s 内感知死连接，而不是等 TCP 重传超时。
+    statement_timeout_ms 供 writer 等批处理场景放宽（如 30000）。
+    """
+    statement_timeout = int(db_config.get("statement_timeout_ms", 2000))
     return {
         "host": db_config["host"],
         "port": db_config.get("port", 5432),
@@ -26,7 +31,11 @@ def _connection_kwargs(db_config: dict[str, Any]) -> dict[str, Any]:
         "user": db_config["user"],
         "password": db_config["password"],
         "connect_timeout": 2,
-        "options": "-c statement_timeout=2000",
+        "options": f"-c statement_timeout={statement_timeout}",
+        "keepalives": 1,
+        "keepalives_idle": 5,
+        "keepalives_interval": 2,
+        "keepalives_count": 2,
     }
 
 
@@ -184,33 +193,45 @@ def get_conn():
     return _pool.getconn()
 
 
-def put_conn(conn):
-    """归还连接到连接池"""
+def put_conn(conn, close: bool = False):
+    """归还连接到连接池；close=True 时丢弃（连接可能已损坏）"""
     if _pool is not None:
-        _pool.putconn(conn)
+        _pool.putconn(conn, close=close)
 
 
 def ping(timeout_ms: int = 2000) -> bool:
-    """执行 SELECT 1 探活；任何异常返回 False，不抛出"""
+    """执行 SELECT 1 探活；任何异常返回 False，不抛出。
+
+    连接池尚未初始化（如 reset_pool 曾失败）时先尝试重建；
+    异常路径丢弃可疑连接而非归还，避免 LIFO 池反复复用同一个死连接。
+    """
     conn = None
     try:
-        conn = get_conn()
+        try:
+            conn = get_conn()
+        except RuntimeError:
+            if _pool is not None:
+                raise  # 非“池未初始化”的运行时错误，走通用异常路径
+            if _db_config is None or not reset_pool():
+                return False
+            conn = get_conn()
         cur = conn.cursor()
         cur.execute(f"SET statement_timeout = {int(timeout_ms)}")
         cur.execute("SELECT 1")
         cur.close()
+        put_conn(conn)
         return True
     except Exception:
-        # 连接可能已损坏，尽力回滚后归还
         if conn is not None:
             try:
                 conn.rollback()
             except Exception:
                 pass
+            try:
+                put_conn(conn, close=True)
+            except Exception:
+                pass
         return False
-    finally:
-        if conn is not None:
-            put_conn(conn)
 
 
 def reset_pool() -> bool:

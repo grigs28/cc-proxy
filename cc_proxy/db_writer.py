@@ -48,24 +48,31 @@ class Batch:
 
 
 def is_connection_error(exc: Exception) -> bool:
-    """连接级错误：无限退避，不写死信、不推进 checkpoint"""
+    """连接级错误：无限退避，不写死信、不推进 checkpoint。
+
+    QueryCanceled（语句超时）在 psycopg2 中是 OperationalError 子类，
+    但属于负载/数据问题，必须排除，否则批处理超时会无限重试同一批。
+    """
+    if isinstance(exc, psycopg2.errors.QueryCanceled):
+        return False
     return isinstance(
         exc, (psycopg2.OperationalError, psycopg2.InterfaceError, TimeoutError)
     )
 
 
 def _usage_row(event: dict) -> tuple:
+    """usage 事件转元组。emitter 产出长键名，兼容早期短键名格式。"""
     return (
-        event.get("rid", ""),
+        event.get("request_id") or event.get("rid", ""),
         event.get("model", ""),
         event.get("provider", ""),
-        int(event.get("in", 0)),
-        int(event.get("out", 0)),
-        int(event.get("cr", 0)),
-        int(event.get("cc", 0)),
-        int(event.get("lat", 0)),
-        int(event.get("st", 200)),
-        bool(event.get("stream", False)),
+        int(event.get("input_tokens", event.get("in", 0)) or 0),
+        int(event.get("output_tokens", event.get("out", 0)) or 0),
+        int(event.get("cache_read_tokens", event.get("cr", 0)) or 0),
+        int(event.get("cache_creation_tokens", event.get("cc", 0)) or 0),
+        int(event.get("latency_ms", event.get("lat", 0)) or 0),
+        int(event.get("status_code", event.get("st", 200)) or 200),
+        bool(event.get("is_streaming", event.get("stream", False))),
     )
 
 
@@ -172,8 +179,13 @@ class WriterCore:
         max_attempts: int = 10,
         connection_retry_limit: int | None = None,
         sleep_fn=time.sleep,
+        on_retry=None,
     ) -> int:
-        """失败分类重试：连接级无限退避，数据级超过上限后转死信并推进"""
+        """失败分类重试：连接级无限退避，数据级超过上限后转死信并推进。
+
+        on_retry(exc, delay)：每次退避前回调，供主循环更新状态文件，
+        避免长时间故障期间可观测性停滞。
+        """
         conn_attempts = 0
         data_attempts = 0
         while True:
@@ -193,6 +205,8 @@ class WriterCore:
                         pass
                     delay = min(60, 2 ** (conn_attempts - 1))
                     logger.warning(f"数据库连接失败，{delay}s 后重试: {e}")
+                    if on_retry:
+                        on_retry(e, delay)
                     sleep_fn(delay)
                     continue
 
@@ -207,6 +221,8 @@ class WriterCore:
                     return 0
                 delay = min(60, 2 ** (data_attempts - 1))
                 logger.warning(f"数据写入失败，{delay}s 后重试: {e}")
+                if on_retry:
+                    on_retry(e, delay)
                 sleep_fn(delay)
 
     def deadletter(self, batch: Batch) -> None:
@@ -370,6 +386,8 @@ def main(argv=None) -> int:
 
         init_config(os.environ.get("CC_CONFIG_PATH", ".env"))
         db_cfg = get_db_config()
+        # 批量写入场景放宽语句超时（默认连接池为 2s，批量 INSERT/upsert 可能不足）
+        db_cfg["statement_timeout_ms"] = 30000
         while True:
             try:
                 db.init_db(db_cfg)
@@ -398,9 +416,14 @@ def main(argv=None) -> int:
 
         last_status = 0.0
         last_error = ""
+
+        def _on_retry(err, delay):
+            """退避期间也更新状态文件，避免故障时可观测性停滞"""
+            write_status(spool_dir, core._load_state(), 0, last_error=str(err))
+
         while True:
             try:
-                n = core.process()
+                n = core.process(on_retry=_on_retry)
                 last_error = ""
             except Exception as e:
                 last_error = str(e)

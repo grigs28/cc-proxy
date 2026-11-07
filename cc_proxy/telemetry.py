@@ -24,6 +24,8 @@ class TelemetryCore:
         max_queue: int = 20000,
         stats_interval: float = 2.0,
         file_max_bytes: int = 100 * 1024 * 1024,
+        max_total_bytes: int = 1024 * 1024 * 1024,
+        capacity_check_interval: float = 30.0,
         now_fn: Callable[[], datetime] | None = None,
     ):
         self._spool_dir = Path(spool_dir) if spool_dir is not None else spool.get_spool_dir()
@@ -32,11 +34,15 @@ class TelemetryCore:
         self._stats_lock = threading.Lock()
         self._stats_interval = stats_interval
         self._file_max_bytes = file_max_bytes
+        self._max_total_bytes = max_total_bytes
+        self._capacity_check_interval = capacity_check_interval
         self._now = now_fn or datetime.now
         self._file = None
         self._file_date: str | None = None
         self._last_stats_flush = 0.0
         self._last_warn = 0.0
+        self._last_capacity_check = 0.0
+        self._capacity_dropping = False
         self._dropped = 0
         self._malformed = 0
         self._degraded = False
@@ -111,6 +117,11 @@ class TelemetryCore:
             })
 
     def _write_event(self, event: dict) -> None:
+        if not self._check_capacity():
+            self._degraded = True
+            self._dropped += 1
+            self._warn("spool 超出总量上限，遥测进入丢弃模式")
+            return
         try:
             f = self._ensure_file()
             f.write(spool.event_line(event))
@@ -120,6 +131,51 @@ class TelemetryCore:
             self._degraded = True
             self._dropped += 1
             self._warn(f"遥测写入失败，已丢弃: {e}")
+
+    def _check_capacity(self) -> bool:
+        """spool 总量是否允许写入。
+
+        超限时先删除 writer 已完全消费的旧文件（字典序早于 checkpoint 的文件）；
+        仍超限则进入丢弃模式。每 capacity_check_interval 秒最多检查一次。
+        """
+        now = time.monotonic()
+        if now - self._last_capacity_check < self._capacity_check_interval:
+            return not self._capacity_dropping
+        self._last_capacity_check = now
+        try:
+            files = spool.list_telemetry_files(self._spool_dir)
+            total = 0
+            for p in files:
+                try:
+                    total += p.stat().st_size
+                except OSError:
+                    pass
+            if total <= self._max_total_bytes:
+                self._capacity_dropping = False
+                return True
+            # 先删除 writer 已消费完成的旧文件
+            state = spool.read_json(spool.writer_state_path(self._spool_dir)) or {}
+            current = state.get("file", "")
+            deleted = 0
+            if current:
+                for p in files:
+                    if total <= self._max_total_bytes:
+                        break
+                    if p.name < current:
+                        try:
+                            size = p.stat().st_size
+                            p.unlink()
+                            total -= size
+                            deleted += 1
+                        except OSError:
+                            pass
+            if deleted:
+                self._warn(f"spool 超上限，已删除 {deleted} 个已消费文件")
+            self._capacity_dropping = total > self._max_total_bytes
+            return not self._capacity_dropping
+        except Exception:
+            # 容量检查失败不阻塞写入
+            return True
 
     def _ensure_file(self):
         now = self._now()
@@ -184,6 +240,7 @@ def configure(
     max_queue: int = 20000,
     stats_interval: float = 2.0,
     file_max_bytes: int = 100 * 1024 * 1024,
+    max_total_bytes: int = 1024 * 1024 * 1024,
     now_fn: Callable[[], datetime] | None = None,
 ) -> None:
     """配置并替换全局遥测核心（先停止旧线程）"""
@@ -195,6 +252,7 @@ def configure(
             max_queue=max_queue,
             stats_interval=stats_interval,
             file_max_bytes=file_max_bytes,
+            max_total_bytes=max_total_bytes,
             now_fn=now_fn,
         )
 
