@@ -13,22 +13,43 @@ logger = logging.getLogger("cc-proxy")
 # 连接池
 _pool: Optional[pool.ThreadedConnectionPool] = None
 _pool_lock = threading.Lock()
+# 最近一次初始化使用的配置，供 reset_pool() 重建连接池
+_db_config: Optional[dict[str, Any]] = None
+
+
+def _connection_kwargs(db_config: dict[str, Any]) -> dict[str, Any]:
+    """构造连接参数：连接超时 2s、语句超时（默认 2000ms）、TCP keepalive 快速发现死连接。
+
+    keepalive 使网络黑洞场景下 libpq 在 ~10s 内感知死连接，而不是等 TCP 重传超时。
+    statement_timeout_ms 供 writer 等批处理场景放宽（如 30000）。
+    """
+    statement_timeout = int(db_config.get("statement_timeout_ms", 2000))
+    return {
+        "host": db_config["host"],
+        "port": db_config.get("port", 5432),
+        "dbname": db_config.get("name", db_config.get("database", "cc_proxy")),
+        "user": db_config["user"],
+        "password": db_config["password"],
+        "connect_timeout": 2,
+        "options": f"-c statement_timeout={statement_timeout}",
+        "keepalives": 1,
+        "keepalives_idle": 5,
+        "keepalives_interval": 2,
+        "keepalives_count": 2,
+    }
 
 
 def init_db(db_config: dict[str, Any]) -> None:
     """初始化数据库连接池并建表"""
-    global _pool
+    global _pool, _db_config
     with _pool_lock:
         if _pool is not None:
             return
+        _db_config = dict(db_config)
         _pool = pool.ThreadedConnectionPool(
             minconn=2,
             maxconn=10,
-            host=db_config["host"],
-            port=db_config.get("port", 5432),
-            dbname=db_config.get("name", db_config.get("database", "cc_proxy")),
-            user=db_config["user"],
-            password=db_config["password"],
+            **_connection_kwargs(db_config),
         )
     logger.info(f"数据库连接池已创建: {db_config['host']}:{db_config.get('port', 5432)}/{db_config.get('name', 'cc_proxy')}")
     _create_tables()
@@ -172,10 +193,66 @@ def get_conn():
     return _pool.getconn()
 
 
-def put_conn(conn):
-    """归还连接到连接池"""
+def put_conn(conn, close: bool = False):
+    """归还连接到连接池；close=True 时丢弃（连接可能已损坏）"""
     if _pool is not None:
-        _pool.putconn(conn)
+        _pool.putconn(conn, close=close)
+
+
+def ping(timeout_ms: int = 2000) -> bool:
+    """执行 SELECT 1 探活；任何异常返回 False，不抛出。
+
+    连接池尚未初始化（如 reset_pool 曾失败）时先尝试重建；
+    异常路径丢弃可疑连接而非归还，避免 LIFO 池反复复用同一个死连接。
+    """
+    conn = None
+    try:
+        try:
+            conn = get_conn()
+        except RuntimeError:
+            if _pool is not None:
+                raise  # 非“池未初始化”的运行时错误，走通用异常路径
+            if _db_config is None or not reset_pool():
+                return False
+            conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(f"SET statement_timeout = {int(timeout_ms)}")
+        cur.execute("SELECT 1")
+        cur.close()
+        put_conn(conn)
+        return True
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                put_conn(conn, close=True)
+            except Exception:
+                pass
+        return False
+
+
+def reset_pool() -> bool:
+    """关闭并重建连接池；失败时 _pool 置 None 并返回 False"""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            try:
+                _pool.closeall()
+            except Exception:
+                pass
+            _pool = None
+    if _db_config is None:
+        return False
+    try:
+        init_db(_db_config)
+        return True
+    except Exception as e:
+        logger.warning(f"数据库连接池重建失败: {e}")
+        _pool = None
+        return False
 
 
 # ============================================================

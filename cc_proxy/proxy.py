@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -23,10 +23,12 @@ from cc_proxy.client import (
     openai_to_anthropic_streaming,
     stream_openai,
 )
+from cc_proxy import db_status, spool, telemetry
 from cc_proxy.cache import inject_prompt_cache_key, resolve_prompt_cache_key
 from cc_proxy.config import get_config, get_db_config, get_model_map, init_config, is_default_password
 from cc_proxy.converter import convert_request, reverse_convert_request
 from cc_proxy.db import db_get_setting, init_db, migrate_from_yaml
+from cc_proxy.db_status import start_prober, stop_prober
 from cc_proxy.providers import get_registry
 from cc_proxy.stats import increment as inc_stats
 from cc_proxy.urls import build_openai_url
@@ -36,7 +38,7 @@ logger = logging.getLogger("cc-proxy")
 # 版本号唯一权威来源：项目根目录 CHANGELOG.md 首个 "## [x.y.z]" 标题。
 # Docker 部署需将 CHANGELOG.md 挂载到 /app/CHANGELOG.md（docker-compose.yml 已配置）。
 CHANGELOG_PATH = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
-_FALLBACK_VERSION = "0.5.3"
+_FALLBACK_VERSION = "0.5.5"
 
 
 def _load_version() -> str:
@@ -89,24 +91,50 @@ def _find_model(model_id: str):
 # FastAPI 应用
 # ============================================================
 
-app = FastAPI(title="cc-proxy", version=VERSION)
-app.mount("/static", StaticFiles(directory=Path(os.path.dirname(__file__)) / "static"), name="static")
-app.include_router(admin_router)
-
-# 条件加载 yz-login SSO 路由（必须在 catch-all 之前注册）
-try:
-    from cc_proxy.yz_auth import router as yz_router
-    app.include_router(yz_router)
-except ImportError:
-    pass
+main_router = APIRouter()
 
 
-@app.get("/health")
+def _build_app() -> FastAPI:
+    """构建一个全新的 FastAPI 应用（不初始化数据库/中间件）。
+
+    create_app() 每次调用都会得到独立实例，避免重复调用时向已启动的 app
+    追加中间件而报错。模块级 app 仅为兼容 cc_proxy.app 旧引用。
+    """
+    instance = FastAPI(title="cc-proxy", version=VERSION)
+    instance.mount(
+        "/static",
+        StaticFiles(directory=Path(os.path.dirname(__file__)) / "static"),
+        name="static",
+    )
+    instance.include_router(admin_router)
+    instance.include_router(main_router)
+    # 条件加载 yz-login SSO 路由（必须在 catch-all 之前注册）
+    try:
+        from cc_proxy.yz_auth import router as yz_router
+        instance.include_router(yz_router)
+    except ImportError:
+        pass
+    return instance
+
+
+# 兼容旧引用（cc_proxy.__init__ 导出 app）；不连接数据库、不注册认证中间件
+app = _build_app()
+
+
+@main_router.get("/health")
 async def health():
-    return {"status": "ok", "service": "cc-proxy", "version": VERSION}
+    """健康检查：只读内存/本地文件，不访问数据库"""
+    return {
+        "status": "ok",
+        "service": "cc-proxy",
+        "version": VERSION,
+        "db": db_status.get_status(),
+        "writer": spool.read_json(spool.writer_status_path()),
+        "telemetry": telemetry.get_counters(),
+    }
 
 
-@app.get("/api/changelog")
+@main_router.get("/api/changelog")
 async def changelog():
     """返回 CHANGELOG.md 内容，供管理面板点击版本号查看"""
     try:
@@ -116,7 +144,7 @@ async def changelog():
     return {"version": VERSION, "changelog": text}
 
 
-@app.get("/v1/models")
+@main_router.get("/v1/models")
 async def list_models():
     """返回模型列表：有别名的用别名，无别名的用模型 ID"""
     models = get_registry().list_all_models()
@@ -128,13 +156,13 @@ async def list_models():
     return {"object": "list", "data": result}
 
 
-@app.get("/v1/models/{model_id:path}")
+@main_router.get("/v1/models/{model_id:path}")
 async def get_model(model_id: str):
     p = get_registry().get_provider_for_model(model_id)
     return {"id": model_id, "object": "model", "created": 0, "owned_by": p.name if p else "proxy"}
 
 
-@app.post("/v1/messages")
+@main_router.post("/v1/messages")
 async def messages_endpoint(request: Request):
     """Anthropic Messages API 端点"""
     body = await request.json()
@@ -187,7 +215,7 @@ async def messages_endpoint(request: Request):
                                        "message": f"Upstream request to provider '{provider.name}' timed out"}})
 
 
-@app.post("/v1/chat/completions")
+@main_router.post("/v1/chat/completions")
 async def chat_completions_endpoint(request: Request):
     """OpenAI Chat Completions API 端点"""
     body = await request.json()
@@ -349,8 +377,25 @@ def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
     except Exception as e:
         logger.warning(f"迁移检查失败: {e}")
 
-    # 4. 加载 providers 到内存
-    get_registry().reload()
+    # 4. 加载 providers 到内存（失败时保留旧配置，不清空路由表）
+    if not get_registry().reload():
+        logger.warning("启动时从数据库加载配置失败，沿用内存中已有配置")
+
+    # 5. 构建全新的 app 实例（可重复调用 create_app，不污染模块级 app）
+    app = _build_app()
+
+    # 6. 启动遥测：后台线程写本地 spool，由独立 db-writer 进程批量入库
+    telemetry.configure(spool_dir=os.environ.get("CC_SPOOL_DIR", "spool"))
+    telemetry.start()
+    app.add_event_handler("shutdown", telemetry.stop)
+
+    # 7. 启动数据库探活线程；恢复后重建连接池并刷新配置
+    from cc_proxy.db import reset_pool
+
+    start_prober(
+        on_recover=lambda: (reset_pool(), get_registry().reload()),
+    )
+    app.add_event_handler("shutdown", stop_prober)
 
     # 同步状态到 admin 模块
     admin_module.proxy_port = port if port is not None else 5566
@@ -362,10 +407,10 @@ def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
     # 条件加载 yz-login SSO 认证
     _yz_sso_loaded = False
     try:
-        from cc_proxy.yz_auth import is_enabled, router as yz_router, middleware as yz_middleware
+        from cc_proxy.yz_auth import is_enabled, middleware as yz_middleware
         if is_enabled():
             logger.info("YZ SSO 登录已启用")
-            app.include_router(yz_router)
+            # yz 路由已在 _build_app() 中注册，这里只挂认证中间件
             app.middleware("http")(yz_middleware)
             admin_module.yz_sso_enabled = True
             _yz_sso_loaded = True
