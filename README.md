@@ -191,12 +191,20 @@ docker-compose -f docker/docker-compose.yml up -d
 
 # 修改代码后重启（无需重建镜像）
 docker restart cc-proxy
+# 遥测写入进程独立重启
+docker restart cc-proxy-writer
 
 # 查看日志
 tail -f log/cc-proxy.log
+tail -f log/db-writer.log
 ```
 
-Docker Compose 挂载了代码目录（`cc_proxy/`、`main.py`、`.env`、`CHANGELOG.md`），修改 Python 文件后只需 `docker restart` 即可生效。端口映射 **5566** → 主端口（Anthropic + OpenAI）。
+Docker Compose 包含两个服务：
+
+- `cc-proxy`：转发与管理面板，端口映射 **5566**；
+- `cc-proxy-writer`：独立遥测写入进程，消费 `spool/` 并批量写入 openGauss，不开放端口。
+
+两个服务共享 `spool/` 目录（`CC_SPOOL_DIR`，容器内 `/app/spool`）。转发进程只向 spool 追加事件，数据库故障不会阻塞 AI 请求；writer 在 DB 不可用时退避重试，恢复后继续消费。Compose 挂载了代码目录（`cc_proxy/`、`main.py`、`.env`、`CHANGELOG.md`），修改 Python 文件后只需 `docker restart` 即可生效。
 
 ## 运行测试
 

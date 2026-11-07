@@ -4,6 +4,21 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.5.5] - 2026-11-07
+
+### 修复 / 可用性
+- 数据库故障不再影响 AI 转发：启动后 provider/model/model_map 全部驻留内存，转发热路径零 DB 调用
+- 统计与用量写入改为本地 JSONL spool（`CC_SPOOL_DIR`，默认 `spool/`），不再在请求路径同步写库
+- 新增独立 `cc-proxy-writer` 进程，消费 spool 批量写入 `request_logs`、聚合 upsert `request_stats`；连接级故障无限退避、不丢数据，数据级故障转死信
+- 管理接口 DB 调用移出事件循环（线程池 + 3s 超时），DB 不可用时快速返回 503
+- `ProviderRegistry.reload()` 失败时保留旧路由表，不再清空导致全量 404
+- 新增 DB 探活线程（10s），恢复后自动重建连接池并刷新配置
+- `/health` 增加 `db`、`writer`、`telemetry` 状态；`create_app()` 改为应用工厂，支持重复创建实例
+
+### 部署
+- `docker-compose.yml` 新增 `cc-proxy-writer` 服务，转发与 writer 共享 `spool/` 目录
+- 新增 `scripts/fault_injection_db.sh` 演练脚本（仅开发机）
+
 ## [0.5.4] - 2026-09-09
 
 ### 修复

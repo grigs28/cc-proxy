@@ -17,7 +17,34 @@ services:
       - ../main.py:/app/main.py
       - ../.env:/app/.env
       - ../cc_proxy:/app/cc_proxy
+      - ../spool:/app/spool
       - ../CHANGELOG.md:/app/CHANGELOG.md:ro
+      - /etc/localtime:/etc/localtime:ro
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 独立遥测写入进程：消费本地 spool，批量写入 openGauss
+  cc-proxy-writer:
+    image: cc-proxy:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: cc-proxy-writer
+    command: ["python", "-m", "cc_proxy.db_writer"]
+    environment:
+      - CC_LOG_DIR=/app/log
+      - CC_SPOOL_DIR=/app/spool
+      - TZ=Asia/Shanghai
+    volumes:
+      - ../log:/app/log
+      - ../.env:/app/.env
+      - ../cc_proxy:/app/cc_proxy
+      - ../main.py:/app/main.py
+      - ../spool:/app/spool
       - /etc/localtime:/etc/localtime:ro
     restart: unless-stopped
     logging:
