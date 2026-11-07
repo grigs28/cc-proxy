@@ -18,6 +18,7 @@ from cc_proxy.client import (
     RETRY_STATUSES,
     anthropic_passthrough_non_streaming,
     anthropic_passthrough_streaming,
+    normalize_anthropic_body,
     openai_non_streaming,
     openai_streaming,
     openai_to_anthropic_non_streaming,
@@ -178,6 +179,8 @@ async def get_model(model_id: str):
 async def messages_endpoint(request: Request):
     """Anthropic Messages API 端点"""
     body = await request.json()
+    # 兼容 Claude Code：messages 中的 system 角色归并到顶层 system
+    body = normalize_anthropic_body(body)
     model = body.get("model", "unknown")
     is_stream = body.get("stream", False)
     user_agent = request.headers.get("User-Agent", "")

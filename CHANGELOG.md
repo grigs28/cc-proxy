@@ -13,6 +13,7 @@
 - `request_logs.created_at` 改用 spool 事件的 `ts`，避免 DB 恢复后故障期缓冲事件被统一打上恢复时间、扭曲趋势统计
 - `writer-status.backlog_bytes` 改为只统计未消费字节（当前 offset 之后 + 后续文件），可正确归零
 - SSE 解析兼容冒号后不带空格的写法（`event:message_start` / `data:{...}`，Kimi 等上游），修复流式请求 usage 被漏采为 0/0
+- 兼容 Claude Code 在 `messages` 数组中携带 `role=system` 消息的请求，自动归并到顶层 `system`，修复本地 vLLM 返回 400 validation error
 
 ## [0.5.5] - 2026-11-07
 

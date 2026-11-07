@@ -74,6 +74,47 @@ def _clean_anthropic_body(body: dict) -> dict:
     return {k: v for k, v in body.items() if k in _ANTHROPIC_CORE_KEYS}
 
 
+def normalize_anthropic_body(body: dict) -> dict:
+    """把 messages 中的 system 角色归并到顶层 system。
+
+    Claude Code 的部分请求会在 messages 数组里携带 role=system 的消息，
+    而 Anthropic 协议（包括 vLLM 兼容端点）只允许 user/assistant，
+    原样透传会得到 400 validation error。
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not any(
+        isinstance(m, dict) and m.get("role") == "system" for m in messages
+    ):
+        return body
+
+    system_blocks: list = []
+    kept: list = []
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "system":
+            content = m.get("content")
+            if isinstance(content, str):
+                system_blocks.append({"type": "text", "text": content})
+            elif isinstance(content, list):
+                system_blocks.extend(content)
+            elif isinstance(content, dict):
+                system_blocks.append(content)
+        else:
+            kept.append(m)
+
+    result = dict(body)
+    result["messages"] = kept
+    existing = result.get("system")
+    if existing is None:
+        result["system"] = system_blocks
+    elif isinstance(existing, str):
+        result["system"] = [{"type": "text", "text": existing}] + system_blocks
+    elif isinstance(existing, list):
+        result["system"] = list(existing) + system_blocks
+    else:
+        result["system"] = system_blocks
+    return result
+
+
 # ============================================================
 # Anthropic 直通
 # ============================================================
@@ -83,7 +124,8 @@ async def anthropic_passthrough_streaming(body: dict, provider: Provider,
                                           cache_enabled: bool = False,
                                           user_agent: str = "") -> StreamingResponse:
     """Anthropic 直通流式：直接 pipe 上游 SSE 字节流"""
-    clean_body = _clean_anthropic_body(body) if strip else body
+    clean_body = normalize_anthropic_body(body)
+    clean_body = _clean_anthropic_body(clean_body) if strip else clean_body
     if cache_enabled:
         clean_body = inject_cache_control(clean_body)
     base_url = provider.get_base_url("anthropic")
@@ -137,7 +179,8 @@ async def anthropic_passthrough_non_streaming(body: dict, provider: Provider,
                                               cache_enabled: bool = False,
                                               user_agent: str = "") -> JSONResponse:
     """Anthropic 直通非流式：原样返回 JSON"""
-    clean_body = _clean_anthropic_body(body) if strip else body
+    clean_body = normalize_anthropic_body(body)
+    clean_body = _clean_anthropic_body(clean_body) if strip else clean_body
     if cache_enabled:
         clean_body = inject_cache_control(clean_body)
     base_url = provider.get_base_url("anthropic")
@@ -343,7 +386,8 @@ async def openai_to_anthropic_non_streaming(anthropic_req: dict, model: str, pro
     base_url = provider.get_base_url("anthropic")
     raw_url = f"{base_url.rstrip('/')}/v1/messages"
     url = dedupe_base_url_path(base_url, raw_url)
-    clean_body = _clean_anthropic_body(anthropic_req) if strip else anthropic_req
+    clean_body = normalize_anthropic_body(anthropic_req)
+    clean_body = _clean_anthropic_body(clean_body) if strip else clean_body
     if cache_enabled:
         clean_body = inject_cache_control(clean_body)
     t0 = time.time()
