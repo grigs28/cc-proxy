@@ -124,8 +124,10 @@ class WriterCore:
         last_file = current
         last_offset = offset
 
+        stop_all = False
         for idx in range(start, len(files)):
             path = files[idx]
+            is_last_file = idx == len(files) - 1
             file_offset = offset if idx == start else 0
             with path.open("rb") as f:
                 f.seek(file_offset)
@@ -135,6 +137,20 @@ class WriterCore:
                         last_file = path.name
                         last_offset = f.tell()
                         break
+                    if not raw.endswith(b"\n"):
+                        if is_last_file:
+                            # emitter 正在写入的半行：回退 offset 到行首，留待下轮
+                            last_file = path.name
+                            last_offset = f.tell() - len(raw)
+                            stop_all = True
+                            break
+                        # 旧文件中的半行是进程崩溃残留：计 malformed 并跳过，避免永久卡死
+                        line = raw.decode("utf-8", errors="replace")
+                        raw_lines.append(line)
+                        malformed += 1
+                        last_file = path.name
+                        last_offset = f.tell()
+                        continue
                     line = raw.decode("utf-8", errors="replace")
                     raw_lines.append(line)
                     last_file = path.name
@@ -153,7 +169,7 @@ class WriterCore:
                         event_count += 1
                     else:
                         malformed += 1
-                if event_count >= self.batch_size:
+                if event_count >= self.batch_size or stop_all:
                     break
 
         if event_count == 0 and malformed == 0:
@@ -314,7 +330,12 @@ def write_status(
     spool_dir = Path(spool_dir) if spool_dir is not None else spool.get_spool_dir()
     now = datetime.now().isoformat(timespec="seconds")
     files = spool.list_telemetry_files(spool_dir)
-    backlog = sum(p.stat().st_size for p in files)
+    backlog = 0
+    for p in files:
+        try:
+            backlog += p.stat().st_size
+        except OSError:
+            pass  # 与 emitter 容量清理并发时文件可能刚被删除
     previous = spool.read_json(spool.writer_status_path(spool_dir)) or {}
     data = {
         "updated_at": now,
@@ -340,7 +361,11 @@ def cleanup_consumed(
         return
     cutoff = time.time() - retention_days * 86400
     for p in spool.list_telemetry_files(spool_dir):
-        if p.name < current and p.stat().st_mtime < cutoff:
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue  # 与 emitter 容量清理并发时文件可能刚被删除
+        if p.name < current and mtime < cutoff:
             try:
                 p.unlink()
             except OSError:

@@ -29,8 +29,11 @@ def fake_db(monkeypatch, tmp_path):
     ])
     monkeypatch.setattr(providers, "db_get_model_map", lambda: {"fake-alias": "fake-model"})
     monkeypatch.setenv("CC_SPOOL_DIR", str(tmp_path / "spool"))
-    # yz_auth.is_enabled() 会惰性 import cc_proxy.db，必须显式关闭，避免测试连真实库
-    monkeypatch.setattr("cc_proxy.yz_auth.is_enabled", lambda: False, raising=False)
+    # yz_auth.is_enabled() 会惰性 import cc_proxy.db，必须显式关闭，避免测试连真实库；
+    # yz_auth 被 .gitignore 排除，干净克隆上模块不存在，需先探测
+    import importlib.util
+    if importlib.util.find_spec("cc_proxy.yz_auth") is not None:
+        monkeypatch.setattr("cc_proxy.yz_auth.is_enabled", lambda: False, raising=False)
     providers._registry = None
     config.reset_model_map_cache()
     yield
