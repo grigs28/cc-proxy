@@ -23,11 +23,12 @@ from cc_proxy.client import (
     openai_to_anthropic_streaming,
     stream_openai,
 )
-from cc_proxy import telemetry
+from cc_proxy import db_status, spool, telemetry
 from cc_proxy.cache import inject_prompt_cache_key, resolve_prompt_cache_key
 from cc_proxy.config import get_config, get_db_config, get_model_map, init_config, is_default_password
 from cc_proxy.converter import convert_request, reverse_convert_request
 from cc_proxy.db import db_get_setting, init_db, migrate_from_yaml
+from cc_proxy.db_status import start_prober, stop_prober
 from cc_proxy.providers import get_registry
 from cc_proxy.stats import increment as inc_stats
 from cc_proxy.urls import build_openai_url
@@ -122,7 +123,15 @@ app = _build_app()
 
 @main_router.get("/health")
 async def health():
-    return {"status": "ok", "service": "cc-proxy", "version": VERSION}
+    """健康检查：只读内存/本地文件，不访问数据库"""
+    return {
+        "status": "ok",
+        "service": "cc-proxy",
+        "version": VERSION,
+        "db": db_status.get_status(),
+        "writer": spool.read_json(spool.writer_status_path()),
+        "telemetry": telemetry.get_counters(),
+    }
 
 
 @main_router.get("/api/changelog")
@@ -379,6 +388,14 @@ def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
     telemetry.configure(spool_dir=os.environ.get("CC_SPOOL_DIR", "spool"))
     telemetry.start()
     app.add_event_handler("shutdown", telemetry.stop)
+
+    # 7. 启动数据库探活线程；恢复后重建连接池并刷新配置
+    from cc_proxy.db import reset_pool
+
+    start_prober(
+        on_recover=lambda: (reset_pool(), get_registry().reload()),
+    )
+    app.add_event_handler("shutdown", stop_prober)
 
     # 同步状态到 admin 模块
     admin_module.proxy_port = port if port is not None else 5566

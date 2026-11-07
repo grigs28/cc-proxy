@@ -15,6 +15,9 @@ def fake_db(monkeypatch, tmp_path):
         lambda key, default=None: [] if key == "passthrough_paths" else True,
     )
     monkeypatch.setattr(proxy, "migrate_from_yaml", lambda cfg: None)
+    # 不启动真实探活线程
+    monkeypatch.setattr(proxy, "start_prober", lambda *a, **kw: None)
+    monkeypatch.setattr(proxy, "stop_prober", lambda *a, **kw: None)
     monkeypatch.setattr(providers, "db_get_providers", lambda: [
         {"name": "fake", "api_key": "k", "models": [
             {"id": "fake-model", "display_name": "Fake", "alias": "fake-alias",
