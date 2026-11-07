@@ -12,6 +12,7 @@
 - writer 启动期 DB 不可用时状态文件不更新，`/health` 显示事故前的旧状态；现在初始化重试期间也写状态
 - `request_logs.created_at` 改用 spool 事件的 `ts`，避免 DB 恢复后故障期缓冲事件被统一打上恢复时间、扭曲趋势统计
 - `writer-status.backlog_bytes` 改为只统计未消费字节（当前 offset 之后 + 后续文件），可正确归零
+- SSE 解析兼容冒号后不带空格的写法（`event:message_start` / `data:{...}`，Kimi 等上游），修复流式请求 usage 被漏采为 0/0
 
 ## [0.5.5] - 2026-11-07
 
