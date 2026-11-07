@@ -90,10 +90,11 @@ class SseUsageCollector:
         data_str = None
         event_type = None
         for line in text.split("\n"):
-            if line.startswith("data: "):
-                data_str = line[6:]
-            elif line.startswith("event: "):
-                event_type = line[7:]
+            # SSE 规范允许冒号后不带空格（部分上游如 Kimi 就是这样）
+            if line.startswith("data:"):
+                data_str = line[5:].strip()
+            elif line.startswith("event:"):
+                event_type = line[6:].strip()
 
         if not data_str or data_str.strip() == "[DONE]":
             return

@@ -162,6 +162,13 @@ async def anthropic_passthrough_non_streaming(body: dict, provider: Provider,
                           is_streaming=False)
             return JSONResponse(status_code=resp.status_code, content=resp_json)
 
+def _sse_data(line: str) -> str | None:
+    """提取 SSE data 行内容；兼容 `data:` 与 `data: ` 两种写法"""
+    if not line.startswith("data:"):
+        return None
+    return line[5:].strip()
+
+
 async def openai_streaming(openai_req: dict, model: str, provider: Provider,
                           user_agent: str = "") -> StreamingResponse:
     """OpenAI 流式 -> Anthropic SSE"""
@@ -204,9 +211,9 @@ async def openai_streaming(openai_req: dict, model: str, provider: Provider,
                         return
 
                     async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
+                        ds = _sse_data(line)
+                        if ds is None:
                             continue
-                        ds = line[6:].strip()
                         if ds == "[DONE]":
                             break
                         try:
