@@ -349,8 +349,9 @@ def create_app(config_path: str = ".env", port: int = None) -> FastAPI:
     except Exception as e:
         logger.warning(f"迁移检查失败: {e}")
 
-    # 4. 加载 providers 到内存
-    get_registry().reload()
+    # 4. 加载 providers 到内存（失败时保留旧配置，不清空路由表）
+    if not get_registry().reload():
+        logger.warning("启动时从数据库加载配置失败，沿用内存中已有配置")
 
     # 同步状态到 admin 模块
     admin_module.proxy_port = port if port is not None else 5566

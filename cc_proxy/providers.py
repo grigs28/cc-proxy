@@ -10,6 +10,7 @@ from cc_proxy.db import (
     db_delete_provider,
     db_find_model,
     db_get_all_models,
+    db_get_model_map,
     db_get_provider,
     db_get_providers,
     db_update_model,
@@ -157,14 +158,19 @@ class ProviderRegistry:
         self._model_map: dict[str, str] = {}
         self._load_from_db()
 
-    def _load_from_db(self) -> None:
-        """从数据库加载提供商"""
+    def _load_from_db(self) -> bool:
+        """从数据库加载提供商与模型映射。
+
+        只有全部查询成功才一次性替换内存数据；失败时保留旧配置并返回 False，
+        避免数据库故障把内存路由表清空。
+        """
         try:
             raw_providers = db_get_providers()
-            self._providers = []
+            model_map = db_get_model_map()
+            new_providers: list[Provider] = []
             for p in raw_providers:
                 models = [Model._from_dict(m) for m in p.get("models", [])]
-                self._providers.append(Provider(
+                new_providers.append(Provider(
                     name=p["name"],
                     api_key=p["api_key"],
                     timeout=p.get("timeout", 300),
@@ -176,16 +182,22 @@ class ProviderRegistry:
                     base_url=p.get("base_url", ""),
                     prompt_cache_key=p.get("prompt_cache_key", ""),
                 ))
-            self._model_map = {}
-            logger.info(f"从数据库加载了 {len(self._providers)} 个提供商")
         except Exception as e:
-            logger.warning(f"从数据库加载提供商失败: {e}")
-            self._providers = []
-            self._model_map = {}
+            logger.warning(f"从数据库加载提供商失败，保留旧配置: {e}")
+            return False
 
-    def reload(self) -> None:
-        """重新加载"""
-        self._load_from_db()
+        # 全部成功后再原子替换
+        self._providers = new_providers
+        self._model_map = dict(model_map)
+        # 惰性导入，避免 providers ↔ config 循环依赖
+        from cc_proxy.config import set_model_map_cache
+        set_model_map_cache(model_map)
+        logger.info(f"从数据库加载了 {len(self._providers)} 个提供商")
+        return True
+
+    def reload(self) -> bool:
+        """重新加载；成功返回 True，失败保留旧配置并返回 False"""
+        return self._load_from_db()
 
     def get_provider_for_model(self, model_id: str) -> Provider | None:
         """根据模型ID或别名查找对应的提供商"""

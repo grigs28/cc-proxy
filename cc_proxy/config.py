@@ -145,14 +145,27 @@ def save_config(config: dict[str, Any], path: str | None = None) -> None:
         logger.info(f"配置已保存: {save_path}")
 
 
-# 以下函数保留兼容性，但改为从 DB 读取
+# 模型映射内存缓存：None 表示尚未从数据库加载（回退 YAML），{} 表示已加载但为空
+_model_map_cache: dict[str, str] | None = None
+
+
+def set_model_map_cache(mapping: dict[str, str]) -> None:
+    """写入模型映射缓存（由 ProviderRegistry 成功 reload 后调用）"""
+    global _model_map_cache
+    _model_map_cache = dict(mapping)
+
+
 def get_model_map() -> dict[str, str]:
-    """获取模型映射（从数据库）"""
-    try:
-        from cc_proxy.db import db_get_model_map
-        return db_get_model_map()
-    except Exception:
-        return get_config().get("model_map", {})
+    """获取模型映射 —— 只读内存，不访问数据库"""
+    if _model_map_cache is not None:
+        return dict(_model_map_cache)
+    return get_config().get("model_map", {})
+
+
+def reset_model_map_cache() -> None:
+    """清空缓存（测试用）"""
+    global _model_map_cache
+    _model_map_cache = None
 
 
 def get_provider_for_model_legacy(model_id: str) -> dict[str, Any] | None:
