@@ -115,6 +115,15 @@ def normalize_anthropic_body(body: dict) -> dict:
     return result
 
 
+def prepare_anthropic_body(
+    body: dict, model_id: str, normalize_models: set[str] | frozenset[str]
+) -> dict:
+    """仅对指定模型做 system 角色归并；其他模型请求体原样返回（不复制）。"""
+    if model_id in normalize_models:
+        return normalize_anthropic_body(body)
+    return body
+
+
 # ============================================================
 # Anthropic 直通
 # ============================================================
@@ -124,8 +133,7 @@ async def anthropic_passthrough_streaming(body: dict, provider: Provider,
                                           cache_enabled: bool = False,
                                           user_agent: str = "") -> StreamingResponse:
     """Anthropic 直通流式：直接 pipe 上游 SSE 字节流"""
-    clean_body = normalize_anthropic_body(body)
-    clean_body = _clean_anthropic_body(clean_body) if strip else clean_body
+    clean_body = _clean_anthropic_body(body) if strip else body
     if cache_enabled:
         clean_body = inject_cache_control(clean_body)
     base_url = provider.get_base_url("anthropic")
@@ -179,8 +187,7 @@ async def anthropic_passthrough_non_streaming(body: dict, provider: Provider,
                                               cache_enabled: bool = False,
                                               user_agent: str = "") -> JSONResponse:
     """Anthropic 直通非流式：原样返回 JSON"""
-    clean_body = normalize_anthropic_body(body)
-    clean_body = _clean_anthropic_body(clean_body) if strip else clean_body
+    clean_body = _clean_anthropic_body(body) if strip else body
     if cache_enabled:
         clean_body = inject_cache_control(clean_body)
     base_url = provider.get_base_url("anthropic")
@@ -386,8 +393,7 @@ async def openai_to_anthropic_non_streaming(anthropic_req: dict, model: str, pro
     base_url = provider.get_base_url("anthropic")
     raw_url = f"{base_url.rstrip('/')}/v1/messages"
     url = dedupe_base_url_path(base_url, raw_url)
-    clean_body = normalize_anthropic_body(anthropic_req)
-    clean_body = _clean_anthropic_body(clean_body) if strip else clean_body
+    clean_body = _clean_anthropic_body(anthropic_req) if strip else anthropic_req
     if cache_enabled:
         clean_body = inject_cache_control(clean_body)
     t0 = time.time()

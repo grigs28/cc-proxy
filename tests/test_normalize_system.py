@@ -45,3 +45,20 @@ def test_leaves_normal_body_unchanged():
     out = normalize_anthropic_body(body)
     assert out["messages"] == body["messages"]
     assert "system" not in out
+
+
+def test_prepare_only_normalizes_selected_model():
+    """只有列入白名单的模型才归并，其他模型请求体必须原样返回"""
+    from cc_proxy.client import prepare_anthropic_body
+
+    body = {
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": "be nice"},
+        ]
+    }
+    out = prepare_anthropic_body(body, "qwen-3", {"qwen-3"})
+    assert [m["role"] for m in out["messages"]] == ["user"]
+
+    untouched = prepare_anthropic_body(body, "deepseek-flash", {"qwen-3"})
+    assert untouched is body

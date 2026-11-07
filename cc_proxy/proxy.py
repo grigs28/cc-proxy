@@ -18,11 +18,11 @@ from cc_proxy.client import (
     RETRY_STATUSES,
     anthropic_passthrough_non_streaming,
     anthropic_passthrough_streaming,
-    normalize_anthropic_body,
     openai_non_streaming,
     openai_streaming,
     openai_to_anthropic_non_streaming,
     openai_to_anthropic_streaming,
+    prepare_anthropic_body,
     stream_openai,
 )
 from cc_proxy import db_status, spool, telemetry
@@ -57,6 +57,10 @@ def _load_version() -> str:
 
 
 VERSION = _load_version()
+
+# 仅这些模型需要把 messages 中的 system 角色归并到顶层 system。
+# 本地 vLLM 的 Anthropic 端点严格只接受 user/assistant；其它上游可容忍，保持原样透传。
+_NORMALIZE_SYSTEM_MODELS = frozenset({"qwen-3"})
 
 # 通用透传端点列表（可通过 .env server.passthrough_paths 扩展）
 _DEFAULT_PASSTHROUGH_PATHS = [
@@ -179,8 +183,6 @@ async def get_model(model_id: str):
 async def messages_endpoint(request: Request):
     """Anthropic Messages API 端点"""
     body = await request.json()
-    # 兼容 Claude Code：messages 中的 system 角色归并到顶层 system
-    body = normalize_anthropic_body(body)
     model = body.get("model", "unknown")
     is_stream = body.get("stream", False)
     user_agent = request.headers.get("User-Agent", "")
@@ -195,6 +197,13 @@ async def messages_endpoint(request: Request):
     if model_obj and model != model_obj.id:
         body["model"] = model_obj.id
         logger.info(f"  alias: {model} -> {model_obj.id}")
+
+    # 仅对指定模型做兼容处理：本地 vLLM 的 Anthropic 端点拒绝 messages 中的 system 角色
+    body = prepare_anthropic_body(
+        body,
+        model_obj.id if model_obj else model,
+        _NORMALIZE_SYSTEM_MODELS,
+    )
 
     supported = model_obj.supported_formats if model_obj else []
     auth_style = model_obj.auth_style if model_obj else "auto"

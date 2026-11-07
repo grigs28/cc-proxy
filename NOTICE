@@ -21,7 +21,7 @@ Claude Code 通用模型网关。
             改用 lifespan）；writer 连接池缺失被误判为数据错误、可能丢遥测；
             故障期缓冲事件改用原始时间戳入库；backlog 只统计未消费字节；
             兼容冒号后无空格的 SSE，恢复流式 usage 采集；
-            兼容 Claude Code 在 messages 中携带 role=system 的请求。
+            仅对本地 qwen-3 兼容 Claude Code messages 中的 role=system 请求。
             已用真实 openGauss 停机演练验证：故障期间转发零失败、死信为零、恢复后自动追平。
 2026-11-07  openGauss 故障不再影响 AI 转发：转发热路径零 DB 调用；遥测改为
             本地 JSONL spool + 独立 cc-proxy-writer 进程批量入库；管理接口
