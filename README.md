@@ -186,6 +186,10 @@ providers:
 ## Docker 部署
 
 ```bash
+# 部署前宿主机检查（ip_forward / docker / 端口占用）
+bash docker/preflight.sh           # 仅检查
+bash docker/preflight.sh --fix     # 检查并自动修复（需要 sudo）
+
 # 构建并启动
 docker-compose -f docker/docker-compose.yml up -d
 

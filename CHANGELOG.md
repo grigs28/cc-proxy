@@ -4,6 +4,12 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.5.7] - 2026-11-25
+
+### 新增
+- `docker/preflight.sh`：部署前宿主机检查脚本。检测 `net.ipv4.ip_forward`、docker daemon、5566 端口占用；`--fix` 可自动修复并持久化到 `/etc/sysctl.conf`
+  - 背景：2026-11-25 生产 18 的 `ip_forward` 被改为 0，所有容器出站连接超时（含连 39 数据库），主容器反复重启、writer 无法消费 spool。Docker 启动时会临时把 `ip_forward` 设为 1，但不写配置文件，被其它工具改回后无任何告警
+
 ## [0.5.6] - 2026-11-07
 
 ### 修复
